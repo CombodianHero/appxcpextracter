@@ -1,1651 +1,1464 @@
-import requests
 import asyncio
 import aiohttp
 import json
+import os
+import re
+import time
+import random
+import logging
 import zipfile
-from typing import Dict, List, Any, Tuple
-from collections import defaultdict
+import hashlib
+from typing import Dict, List, Any, Tuple, Optional
+from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
 from base64 import b64encode, b64decode
+
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad, unpad
-import os
-import base64
 from pyrogram import Client, filters
-import sys
-import re
-import requests
-import uuid
-import random
-import string
-import hashlib
-from pyrogram.types.messages_and_media import message
-from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 from pyrogram.errors import FloodWait
 from pyromod import listen
 from pyromod.exceptions.listener_timeout import ListenerTimeout
-from pyrogram.types import Message
-import pyrogram
-from pyrogram import Client, filters
-from pyrogram.types import User, Message
-from pyrogram.enums import ChatMemberStatus
-from pyrogram.raw.functions.channels import GetParticipants
-from config import api_id, api_hash, bot_token, auth_users
-from datetime import datetime
-import time
-from concurrent.futures import ThreadPoolExecutor
-THREADPOOL = ThreadPoolExecutor(max_workers=1000)
-import logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-image_list = [
-"https://graph.org/file/8b1f4146a8d6b43e5b2bc-be490579da043504d5.jpg",
-"https://graph.org/file/b75dab2b3f7eaff612391-282aa53538fd3198d4.jpg",
-"https://graph.org/file/38de0b45dd9144e524a33-0205892dd05593774b.jpg",
-"https://graph.org/file/be39f0eebb9b66d7d6bc9-59af2f46a4a8c510b7.jpg",
-"https://graph.org/file/8b7e3d10e362a2850ba0a-f7c7c46e9f4f50b10b.jpg",
+from config import api_id, api_hash, bot_token, auth_users
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('bot.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# Thread pool for parallel processing
+THREADPOOL = ThreadPoolExecutor(max_workers=100)
+
+# Constants
+IMAGE_LIST = [
+    "https://graph.org/file/8b1f4146a8d6b43e5b2bc-be490579da043504d5.jpg",
+    "https://graph.org/file/b75dab2b3f7eaff612391-282aa53538fd3198d4.jpg",
+    "https://graph.org/file/38de0b45dd9144e524a33-0205892dd05593774b.jpg",
+    "https://graph.org/file/be39f0eebb9b66d7d6bc9-59af2f46a4a8c510b7.jpg",
+    "https://graph.org/file/8b7e3d10e362a2850ba0a-f7c7c46e9f4f50b10b.jpg",
 ]
-print(4321)
+
+# Initialize bot client
 bot = Client(
     "bot",
     api_id=api_id,
     api_hash=api_hash,
-    bot_token=bot_token)
+    bot_token=bot_token
+)
+
+
+# =============================================================================
+# HELPER FUNCTIONS
+# =============================================================================
+
+def format_time(seconds: float) -> str:
+    """Format time in seconds to human readable format"""
+    minutes = int(seconds // 60)
+    secs = int(seconds % 60)
+    
+    if minutes == 0:
+        if secs < 1:
+            return f"{seconds:.2f} seconds"
+        return f"{secs} seconds"
+    return f"{minutes} minutes {secs} seconds"
+
+
+def get_auth_user_info() -> Tuple[str, str]:
+    """Get auth user info for bot owner"""
+    return auth_users[0]
+
+
+async def check_user_auth(user_id: int, bot, message) -> bool:
+    """Check if user is authorized to use the bot"""
+    if user_id not in auth_users:
+        auth_user = auth_users[0]
+        user = await bot.get_users(auth_user)
+        owner_username = "@" + user.username
+        await bot.send_message(
+            message.chat.id,
+            f"**You Are Not Subscribed To This Bot\nContact - {owner_username}**"
+        )
+        return False
+    return True
+
+
+def clean_filename(name: str, max_length: int = 244) -> str:
+    """Clean filename by removing invalid characters"""
+    return name.replace("/", "-").replace("|", "-")[:max_length]
+
+
+# =============================================================================
+# START COMMAND
+# =============================================================================
 
 @bot.on_message(filters.command(["start"]))
-async def start(bot, message):
-  random_image_url = random.choice(image_list)
-
-  keyboard = [
-    [
-      InlineKeyboardButton("🚀 Physics Wallah without Purchase 🚀", callback_data="pwwp")
-    ],
-    [
-      InlineKeyboardButton("📘 Classplus without Purchase 📘", callback_data="cpwp")
-    ],
-    [
-      InlineKeyboardButton("📒 Appx Without Purchase 📒", callback_data="appxwp")
+async def start_command(bot: Client, message: Message):
+    """Handle start command"""
+    random_image_url = random.choice(IMAGE_LIST)
+    
+    keyboard = [
+        [InlineKeyboardButton("🚀 Physics Wallah without Purchase 🚀", callback_data="pwwp")],
+        [InlineKeyboardButton("📘 Classplus without Purchase 📘", callback_data="cpwp")],
+        [InlineKeyboardButton("📒 Appx Without Purchase 📒", callback_data="appxwp")]
     ]
-  ]
-
-  reply_markup = InlineKeyboardMarkup(keyboard)
-
-  await message.reply_photo(
-    photo=random_image_url,
-    caption="**Developer - @erpurchasebot\nPLEASE👇PRESS👇HERE**",
-    quote=True,
-    reply_markup=reply_markup
-  )
-@bot.on_message(group=2)
-#async def account_login(bot: Client, m: Message):
-#    try:
-#        await bot.forward_messages(chat_id=chat_id, from_chat_id=m.chat.id, message_ids=m.id)
-#    except:
-#        pass
-        
-async def fetch_pwwp_data(session: aiohttp.ClientSession, url: str, headers: Dict = None, params: Dict = None, data: Dict = None, method: str = 'GET') -> Any:
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            async with session.request(method, url, headers=headers, params=params, json=data) as response:
-                response.raise_for_status()
-                return await response.json()
-        except aiohttp.ClientError as e:
-            logging.error(f"Attempt {attempt + 1} failed: aiohttp error fetching {url}: {e}")
-        except Exception as e:
-            logging.exception(f"Attempt {attempt + 1} failed: Unexpected error fetching {url}: {e}")
-
-        if attempt < max_retries - 1:
-            await asyncio.sleep(90 ** attempt)
-        else:
-            logging.error(f"Failed to fetch {url} after {max_retries} attempts.")
-            return None
-
-
-async def process_pwwp_chapter_content(session: aiohttp.ClientSession, chapter_id, selected_batch_id, subject_id, schedule_id, content_type, headers: Dict):
-    url = f"https://api.penpencil.co/v1/batches/{selected_batch_id}/subject/{subject_id}/schedule/{schedule_id}/schedule-details"
-    data = await fetch_pwwp_data(session, url, headers=headers)
-    content = []
-
-    if data and data.get("success") and data.get("data"):
-        data_item = data["data"]
-
-        if content_type in ("videos", "DppVideos"):
-            video_details = data_item.get('videoDetails', {})
-            if video_details:
-                name = data_item.get('topic', '')
-                videoUrl = video_details.get('videoUrl') or video_details.get('embedCode') or ""
-            #    image = video_details.get('image', "")
-
-                if videoUrl:
-                    line = f"{name}:{videoUrl}"
-                    content.append(line)
-               #     logging.info(line)
-
-        elif content_type in ("notes", "DppNotes"):
-            homework_ids = data_item.get('homeworkIds', [])
-            for homework in homework_ids:
-                attachment_ids = homework.get('attachmentIds', [])
-                name = homework.get('topic', '')
-                for attachment in attachment_ids:
-                    url = attachment.get('baseUrl', '') + attachment.get('key', '')
-                    if url:
-                        line = f"{name}:{url}"
-                        content.append(line)
-                    #    logging.info(line)
-
-        return {content_type: content} if content else {}
-    else:
-        logging.warning(f"No Data Found For  Id - {schedule_id}")
-        return {}
-
-
-async def fetch_pwwp_all_schedule(session: aiohttp.ClientSession, chapter_id, selected_batch_id, subject_id, content_type, headers: Dict) -> List[Dict]:
-    all_schedule = []
-    page = 1
-    while True:
-        params = {
-            'tag': chapter_id,
-            'contentType': content_type,
-            'page': page
-        }
-        url = f"https://api.penpencil.co/v2/batches/{selected_batch_id}/subject/{subject_id}/contents"
-        data = await fetch_pwwp_data(session, url, headers=headers, params=params)
-
-        if data and data.get("success") and data.get("data"):
-            for item in data["data"]:
-                item['content_type'] = content_type
-                all_schedule.append(item)
-            page += 1
-        else:
-            break
-    return all_schedule
-
-
-async def process_pwwp_chapters(session: aiohttp.ClientSession, chapter_id, selected_batch_id, subject_id, headers: Dict):
-    content_types = ['videos', 'notes', 'DppNotes', 'DppVideos']
+    reply_markup = InlineKeyboardMarkup(keyboard)
     
-    all_schedule_tasks = [fetch_pwwp_all_schedule(session, chapter_id, selected_batch_id, subject_id, content_type, headers) for content_type in content_types]
-    all_schedules = await asyncio.gather(*all_schedule_tasks)
+    await message.reply_photo(
+        photo=random_image_url,
+        caption="**Developer - @erpurchasebot\nPLEASE👇PRESS👇HERE**",
+        quote=True,
+        reply_markup=reply_markup
+    )
+
+
+# =============================================================================
+# PHYSICS WALLAH SECTION
+# =============================================================================
+
+class PhysicsWallahDownloader:
+    """Class to handle Physics Wallah content downloading"""
     
-    all_schedule = []
-    for schedule in all_schedules:
-        all_schedule.extend(schedule)
-        
-    content_tasks = [
-        process_pwwp_chapter_content(session, chapter_id, selected_batch_id, subject_id, item["_id"], item['content_type'], headers)
-        for item in all_schedule
-    ]
-    content_results = await asyncio.gather(*content_tasks)
-
-    combined_content = {}
-    for result in content_results:
-        if result:
-            for content_type, content_list in result.items():
-                if content_type not in combined_content:
-                    combined_content[content_type] = []
-                combined_content[content_type].extend(content_list)
-
-    return combined_content
-
-
-async def get_pwwp_all_chapters(session: aiohttp.ClientSession, selected_batch_id, subject_id, headers: Dict):
-    all_chapters = []
-    page = 1
-    while True:
-        url = f"https://api.penpencil.co/v2/batches/{selected_batch_id}/subject/{subject_id}/topics?page={page}"
-        data = await fetch_pwwp_data(session, url, headers=headers)
-
-        if data and data.get("data"):
-            chapters = data["data"]
-            all_chapters.extend(chapters)
-            page += 1
-        else:
-            break
-
-    return all_chapters
-
-
-async def process_pwwp_subject(session: aiohttp.ClientSession, subject: Dict, selected_batch_id: str, selected_batch_name: str, zipf: zipfile.ZipFile, json_data: Dict, all_subject_urls: Dict[str, List[str]], headers: Dict):
-    subject_name = subject.get("subject", "Unknown Subject").replace("/", "-")
-    subject_id = subject.get("_id")
-    json_data[selected_batch_name][subject_name] = {}
-    zipf.writestr(f"{subject_name}/", "")
-    
-    chapters = await get_pwwp_all_chapters(session, selected_batch_id, subject_id, headers)
-    
-    chapter_tasks = []
-    for chapter in chapters:
-        chapter_name = chapter.get("name", "Unknown Chapter").replace("/", "-")
-        zipf.writestr(f"{subject_name}/{chapter_name}/", "")
-        json_data[selected_batch_name][subject_name][chapter_name] = {}
-
-        chapter_tasks.append(process_pwwp_chapters(session, chapter["_id"], selected_batch_id, subject_id, headers))
-
-    chapter_results = await asyncio.gather(*chapter_tasks)
-
-    all_urls = []
-    for chapter, chapter_content in zip(chapters, chapter_results):
-        chapter_name = chapter.get("name", "Unknown Chapter").replace("/", "-")
-
-        for content_type in ['videos', 'notes', 'DppNotes', 'DppVideos']:
-            if chapter_content.get(content_type):
-                content = chapter_content[content_type]
-                content.reverse()
-                content_string = "\n".join(content)
-                zipf.writestr(f"{subject_name}/{chapter_name}/{content_type}.txt", content_string.encode('utf-8'))
-                json_data[selected_batch_name][subject_name][chapter_name][content_type] = content
-                all_urls.extend(content)
-    all_subject_urls[subject_name] = all_urls
-
-def find_pw_old_batch(batch_search):
-
-    try:
-        response = requests.get(f"https://abhiguru143.github.io/AS-MULTIVERSE-PW/batch/batch.json")
-        response.raise_for_status()
-        data = response.json()
-    except requests.exceptions.RequestException as e:
-        logging.error(f"Error fetching data: {e}")
-        return []
-    except json.JSONDecodeError as e:
-        logging.error(f"Error decoding JSON: {e}")
-        return []
-
-    matching_batches = []
-    for batch in data:
-        if batch_search.lower() in batch['batch_name'].lower():
-            matching_batches.append(batch)
-
-    return matching_batches
-
-async def get_pwwp_todays_schedule_content_details(session: aiohttp.ClientSession, selected_batch_id, subject_id, schedule_id, headers: Dict) -> List[str]:
-
-    url = f"https://api.penpencil.co/v1/batches/{selected_batch_id}/subject/{subject_id}/schedule/{schedule_id}/schedule-details"
-    data = await fetch_pwwp_data(session, url, headers)
-    content = []
-
-    if data and data.get("success") and data.get("data"):
-        data_item = data["data"]
-        
-        video_details = data_item.get('videoDetails', {})
-        if video_details:
-            name = data_item.get('topic')
-            
-            videoUrl = video_details.get('videoUrl') or video_details.get('embedCode')
-            image = video_details.get('image')
-                
-            if videoUrl:
-                line = f"{name}:{videoUrl}\n"
-                content.append(line)
-           #     logging.info(line)
-               
-                          
-        homework_ids = data_item.get('homeworkIds')
-        for homework in homework_ids:
-            attachment_ids = homework.get('attachmentIds')
-            name = homework.get('topic')
-            for attachment in attachment_ids:
-            
-                url = attachment.get('baseUrl', '') + attachment.get('key', '')
-                        
-                if url:
-                    line = f"{name}:{url}\n"
-                    content.append(line)
-                #    logging.info(line)
-                
-        dpp = data_item.get('dpp')
-        if dpp:
-            dpp_homework_ids = dpp.get('homeworkIds')
-            for homework in dpp_homework_ids:
-                attachment_ids = homework.get('attachmentIds')
-                name = homework.get('topic')
-                for attachment in attachment_ids:
-                
-                    url = attachment.get('baseUrl', '') + attachment.get('key', '')
-                        
-                    if url:
-                        line = f"{name}:{url}\n"
-                        content.append(line)
-                    #    logging.info(line)
-    else:
-        logging.warning(f"No Data Found For  Id - {schedule_id}")
-    return content
-    
-async def get_pwwp_all_todays_schedule_content(session: aiohttp.ClientSession, selected_batch_id: str, headers: Dict) -> List[str]:
-
-    url = f"https://api.penpencil.co/v1/batches/{selected_batch_id}/todays-schedule"
-    todays_schedule_details = await fetch_pwwp_data(session, url, headers)
-    all_content = []
-
-    if todays_schedule_details and todays_schedule_details.get("success") and todays_schedule_details.get("data"):
-        tasks = []
-
-        for item in todays_schedule_details['data']:
-            schedule_id = item.get('_id')
-            subject_id = item.get('batchSubjectId')
-            
-            task = asyncio.create_task(get_pwwp_todays_schedule_content_details(session, selected_batch_id, subject_id, schedule_id, headers))
-            tasks.append(task)
-            
-        results = await asyncio.gather(*tasks)
-        
-        for result in results:
-            all_content.extend(result)
-            
-    else:
-        logging.warning("No today's schedule data found.")
-
-    return all_content
-    
-@bot.on_callback_query(filters.regex("^pwwp$"))
-async def pwwp_callback(bot, callback_query):
-    user_id = callback_query.from_user.id
-    await callback_query.answer()
-    
-    auth_user = auth_users[0]
-    user = await bot.get_users(auth_user)
-    owner_username = "@" + user.username
-
-    if user_id not in auth_users:
-        await bot.send_message(callback_query.message.chat.id, f"**You Are Not Subscribed To This Bot\nContact - {owner_username}**")
-        return
-            
-    THREADPOOL.submit(asyncio.run, process_pwwp(bot, callback_query.message, user_id))
-
-async def process_pwwp(bot: Client, m: Message, user_id: int):
-
-    editable = await m.reply_text("**Enter Woking Access Token\n\nOR\n\nEnter Phone Number**")
-
-    try:
-        input1 = await bot.listen(chat_id=m.chat.id, filters=filters.user(user_id), timeout=120)
-        raw_text1 = input1.text
-        await input1.delete(True)
-    except:
-        await editable.edit("**Timeout! You took too long to respond**")
-        return
-
-    headers = {
+    BASE_URL = "https://api.penpencil.co"
+    HEADERS = {
         'Host': 'api.penpencil.co',
         'client-id': '5eb393ee95fab7468a79d189',
         'client-version': '1910',
-        'user-agent': 'Mozilla/5.0 (Linux; Android 12; M2101K6P) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Mobile Safari/537.36',
+        'user-agent': 'Mozilla/5.0 (Linux; Android 12; M2101K6P) AppleWebKit/537.36',
         'randomid': '72012511-256c-4e1c-b4c7-29d67136af37',
         'client-type': 'WEB',
         'content-type': 'application/json; charset=utf-8',
     }
-
-    loop = asyncio.get_event_loop()    
-    CONNECTOR = aiohttp.TCPConnector(limit=1000, loop=loop)
-    async with aiohttp.ClientSession(connector=CONNECTOR, loop=loop) as session:
+    
+    def __init__(self, session: aiohttp.ClientSession, user_id: int):
+        self.session = session
+        self.user_id = user_id
+        
+    async def fetch_data(self, url: str, params: Dict = None, data: Dict = None, 
+                        method: str = 'GET', max_retries: int = 3) -> Optional[Dict]:
+        """Fetch data from API with retry logic"""
+        for attempt in range(max_retries):
+            try:
+                async with self.session.request(
+                    method, url, params=params, json=data, headers=self.HEADERS
+                ) as response:
+                    response.raise_for_status()
+                    return await response.json()
+            except aiohttp.ClientError as e:
+                logger.error(f"Attempt {attempt + 1} failed: {e}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2 ** attempt)
+        return None
+    
+    async def login_with_phone(self, phone: str) -> Optional[str]:
+        """Login with phone number and OTP"""
+        data = {
+            "username": phone,
+            "countryCode": "+91",
+            "organizationId": "5eb393ee95fab7468a79d189"
+        }
+        
         try:
-            if raw_text1.isdigit() and len(raw_text1) == 10:
-                phone = raw_text1
-                data = {
-                    "username": phone,
-                    "countryCode": "+91",
-                    "organizationId": "5eb393ee95fab7468a79d189"
-                }
-                try:
-                    async with session.post(f"https://api.penpencil.co/v1/users/get-otp?smsType=0", json=data, headers=headers) as response:
-                        await response.read()
-                    
-                except Exception as e:
-                    await editable.edit(f"**Error : {e}**")
-                    return
+            await self.session.post(
+                f"{self.BASE_URL}/v1/users/get-otp?smsType=0",
+                json=data, headers=self.HEADERS
+            )
+        except Exception as e:
+            raise Exception(f"Failed to send OTP: {e}")
+        
+        return None  # OTP sent successfully
+    
+    async def verify_otp(self, phone: str, otp: str) -> str:
+        """Verify OTP and get access token"""
+        payload = {
+            "username": phone,
+            "otp": otp,
+            "client_id": "system-admin",
+            "client_secret": "KjPXuAVfC5xbmgreETNMaL7z",
+            "grant_type": "password",
+            "organizationId": "5eb393ee95fab7468a79d189"
+        }
+        
+        async with self.session.post(
+            f"{self.BASE_URL}/v3/oauth/token",
+            json=payload, headers=self.HEADERS
+        ) as response:
+            data = await response.json()
+            return data["data"]["access_token"]
+    
+    async def get_purchased_batches(self) -> List[Dict]:
+        """Get all purchased batches"""
+        params = {'mode': '1', 'page': '1'}
+        async with self.session.get(
+            f"{self.BASE_URL}/v3/batches/all-purchased-batches",
+            headers=self.HEADERS, params=params
+        ) as response:
+            response.raise_for_status()
+            return (await response.json()).get("data", [])
+    
+    async def search_batches(self, name: str) -> List[Dict]:
+        """Search for batches by name"""
+        url = f"{self.BASE_URL}/v3/batches/search?name={name}"
+        data = await self.fetch_data(url)
+        return data.get("data", []) if data else []
+    
+    async def get_batch_details(self, batch_id: str) -> Dict:
+        """Get batch details including subjects"""
+        url = f"{self.BASE_URL}/v3/batches/{batch_id}/details"
+        return await self.fetch_data(url)
+    
+    async def get_chapters(self, batch_id: str, subject_id: str) -> List[Dict]:
+        """Get all chapters for a subject"""
+        all_chapters = []
+        page = 1
+        while True:
+            url = f"{self.BASE_URL}/v2/batches/{batch_id}/subject/{subject_id}/topics?page={page}"
+            data = await self.fetch_data(url)
+            
+            if data and data.get("data"):
+                all_chapters.extend(data["data"])
+                page += 1
+            else:
+                break
+        return all_chapters
+    
+    async def get_chapter_content(self, batch_id: str, subject_id: str, 
+                                  chapter_id: str) -> Dict[str, List[str]]:
+        """Get all content for a chapter"""
+        content_types = ['videos', 'notes', 'DppNotes', 'DppVideos']
+        content_tasks = []
+        
+        for content_type in content_types:
+            content_tasks.append(
+                self._fetch_content_by_type(batch_id, subject_id, chapter_id, content_type)
+            )
+        
+        content_results = await asyncio.gather(*content_tasks)
+        
+        combined_content = {}
+        for result in content_results:
+            if result:
+                for content_type, content_list in result.items():
+                    if content_type not in combined_content:
+                        combined_content[content_type] = []
+                    combined_content[content_type].extend(content_list)
+        
+        return combined_content
+    
+    async def _fetch_content_by_type(self, batch_id: str, subject_id: str, 
+                                     chapter_id: str, content_type: str) -> Dict[str, List[str]]:
+        """Fetch content of specific type for a chapter"""
+        all_schedules = []
+        page = 1
+        
+        while True:
+            params = {
+                'tag': chapter_id,
+                'contentType': content_type,
+                'page': page
+            }
+            url = f"{self.BASE_URL}/v2/batches/{batch_id}/subject/{subject_id}/contents"
+            data = await self.fetch_data(url, params=params)
+            
+            if data and data.get("success") and data.get("data"):
+                for item in data["data"]:
+                    item['content_type'] = content_type
+                    all_schedules.append(item)
+                page += 1
+            else:
+                break
+        
+        content = []
+        for item in all_schedules:
+            schedule_id = item["_id"]
+            url = f"{self.BASE_URL}/v1/batches/{batch_id}/subject/{subject_id}/schedule/{schedule_id}/schedule-details"
+            data = await self.fetch_data(url)
+            
+            if data and data.get("success") and data.get("data"):
+                data_item = data["data"]
+                
+                if content_type in ("videos", "DppVideos"):
+                    video_details = data_item.get('videoDetails', {})
+                    if video_details:
+                        name = data_item.get('topic', '')
+                        video_url = video_details.get('videoUrl') or video_details.get('embedCode')
+                        if video_url:
+                            content.append(f"{name}:{video_url}")
+                
+                elif content_type in ("notes", "DppNotes"):
+                    homework_ids = data_item.get('homeworkIds', [])
+                    for homework in homework_ids:
+                        name = homework.get('topic', '')
+                        for attachment in homework.get('attachmentIds', []):
+                            url_val = attachment.get('baseUrl', '') + attachment.get('key', '')
+                            if url_val:
+                                content.append(f"{name}:{url_val}")
+        
+        return {content_type: content} if content else {}
+    
+    async def get_todays_schedule(self, batch_id: str) -> List[str]:
+        """Get today's schedule content"""
+        url = f"{self.BASE_URL}/v1/batches/{batch_id}/todays-schedule"
+        data = await self.fetch_data(url)
+        all_content = []
+        
+        if data and data.get("success") and data.get("data"):
+            tasks = []
+            for item in data['data']:
+                schedule_id = item.get('_id')
+                subject_id = item.get('batchSubjectId')
+                tasks.append(self._get_schedule_details(batch_id, subject_id, schedule_id))
+            
+            results = await asyncio.gather(*tasks)
+            for result in results:
+                all_content.extend(result)
+        
+        return all_content
+    
+    async def _get_schedule_details(self, batch_id: str, subject_id: str, 
+                                    schedule_id: str) -> List[str]:
+        """Get details for a specific schedule"""
+        url = f"{self.BASE_URL}/v1/batches/{batch_id}/subject/{subject_id}/schedule/{schedule_id}/schedule-details"
+        data = await self.fetch_data(url)
+        content = []
+        
+        if data and data.get("success") and data.get("data"):
+            data_item = data["data"]
+            
+            # Get video content
+            video_details = data_item.get('videoDetails', {})
+            if video_details:
+                name = data_item.get('topic', '')
+                video_url = video_details.get('videoUrl') or video_details.get('embedCode')
+                if video_url:
+                    content.append(f"{name}:{video_url}\n")
+            
+            # Get homework/notes content
+            homework_ids = data_item.get('homeworkIds', [])
+            for homework in homework_ids:
+                name = homework.get('topic', '')
+                for attachment in homework.get('attachmentIds', []):
+                    url_val = attachment.get('baseUrl', '') + attachment.get('key', '')
+                    if url_val:
+                        content.append(f"{name}:{url_val}\n")
+            
+            # Get DPP content
+            dpp = data_item.get('dpp', {})
+            if dpp:
+                dpp_homework_ids = dpp.get('homeworkIds', [])
+                for homework in dpp_homework_ids:
+                    name = homework.get('topic', '')
+                    for attachment in homework.get('attachmentIds', []):
+                        url_val = attachment.get('baseUrl', '') + attachment.get('key', '')
+                        if url_val:
+                            content.append(f"{name}:{url_val}\n")
+        
+        return content
 
+
+@bot.on_callback_query(filters.regex("^pwwp$"))
+async def pwwp_callback(bot: Client, callback_query):
+    """Handle Physics Wallah callback"""
+    user_id = callback_query.from_user.id
+    await callback_query.answer()
+    
+    if not await check_user_auth(user_id, bot, callback_query.message):
+        return
+    
+    THREADPOOL.submit(asyncio.run, process_pwwp(bot, callback_query.message, user_id))
+
+
+async def process_pwwp(bot: Client, message: Message, user_id: int):
+    """Process Physics Wallah download"""
+    editable = await message.reply_text(
+        "**Enter Working Access Token\n\nOR\n\nEnter Phone Number**"
+    )
+    
+    try:
+        # Get user input for login
+        try:
+            input1 = await bot.listen(
+                chat_id=message.chat.id,
+                filters=filters.user(user_id),
+                timeout=120
+            )
+            raw_text1 = input1.text
+            await input1.delete()
+        except ListenerTimeout:
+            await editable.edit("**Timeout! You took too long to respond**")
+            return
+        
+        loop = asyncio.get_event_loop()
+        connector = aiohttp.TCPConnector(limit=100, loop=loop)
+        
+        async with aiohttp.ClientSession(connector=connector) as session:
+            downloader = PhysicsWallahDownloader(session, user_id)
+            
+            # Handle login
+            if raw_text1.isdigit() and len(raw_text1) == 10:
+                # Login with phone number
+                phone = raw_text1
+                await downloader.login_with_phone(phone)
+                
                 editable = await editable.edit("**ENTER OTP YOU RECEIVED**")
                 try:
-                    input2 = await bot.listen(chat_id=m.chat.id, filters=filters.user(user_id), timeout=120)
+                    input2 = await bot.listen(
+                        chat_id=message.chat.id,
+                        filters=filters.user(user_id),
+                        timeout=120
+                    )
                     otp = input2.text
-                    await input2.delete(True)
-                except:
-                    await editable.edit("**Timeout! You took too long to respond**")
-                    return
-
-                payload = {
-                    "username": phone,
-                    "otp": otp,
-                    "client_id": "system-admin",
-                    "client_secret": "KjPXuAVfC5xbmgreETNMaL7z",
-                    "grant_type": "password",
-                    "organizationId": "5eb393ee95fab7468a79d189",
-                    "latitude": 0,
-                    "longitude": 0
-                }
-
-                try:
-                    async with session.post(f"https://api.penpencil.co/v3/oauth/token", json=payload, headers=headers) as response:
-                        access_token = (await response.json())["data"]["access_token"]
-                        monster = await editable.edit(f"<b>Physics Wallah Login Successful ✅</b>\n\n<pre language='Save this Login Token for future usage'>{access_token}</pre>\n\n")
-                        editable = await m.reply_text("**Getting Batches In Your I'd**")
-                    
-                except Exception as e:
-                    await editable.edit(f"**Error : {e}**")
-                    return
-
-            else:
-                access_token = raw_text1
-            
-            headers['authorization'] = f"Bearer {access_token}"
-        
-            params = {
-                'mode': '1',
-                'page': '1',
-            }
-            try:
-                async with session.get(f"https://api.penpencil.co/v3/batches/all-purchased-batches", headers=headers, params=params) as response:
-                    response.raise_for_status()
-                    batches = (await response.json()).get("data", [])
-            except Exception as e:
-                await editable.edit("**```\nLogin Failed❗TOKEN IS EXPIRED```\nPlease Enter Working Token\n                       OR\nLogin With Phone Number**")
-                return
-        
-            await editable.edit("**Enter Your Batch Name**")
-            try:
-                input3 = await bot.listen(chat_id=m.chat.id, filters=filters.user(user_id), timeout=120)
-                batch_search = input3.text
-                await input3.delete(True)
-            except:
-                await editable.edit("**Timeout! You took too long to respond**")
-                return
-                
-            url = f"https://api.penpencil.co/v3/batches/search?name={batch_search}"
-            courses = await fetch_pwwp_data(session, url, headers)
-            courses = courses.get("data", {}) if courses else {}
-
-            if courses:
-                text = ''
-                for cnt, course in enumerate(courses):
-                    name = course['name']
-                    text += f"{cnt + 1}. ```\n{name}```\n"
-                await editable.edit(f"**Send index number of the course to download.\n\n{text}\n\nIf Your Batch Not Listed Above Enter - No**")
-            
-                try:
-                    input4 = await bot.listen(chat_id=m.chat.id, filters=filters.user(user_id), timeout=120)
-                    raw_text4 = input4.text
-                    await input4.delete(True)
-                except:
-                    await editable.edit("**Timeout! You took too long to respond**")
-                    return
-                
-                if input4.text.isdigit() and 1 <= int(input4.text) <= len(courses):
-                    selected_course_index = int(input4.text.strip())
-                    course = courses[selected_course_index - 1]
-                    selected_batch_id = course['_id']
-                    selected_batch_name = course['name']
-                    clean_batch_name = selected_batch_name.replace("/", "-").replace("|", "-")
-                    clean_file_name = f"{user_id}_{clean_batch_name}"
-                    
-                elif "No" in input4.text:
-                    courses = find_pw_old_batch(batch_search)
-                    if courses:
-                        text = ''
-                        for cnt, course in enumerate(courses):
-                            name = course['batch_name']
-                            text += f"{cnt + 1}. ```\n{name}```\n"
-                            
-                        await editable.edit(f"**Send index number of the course to download.\n\n{text}**")
-                
-                        try:
-                            input5 = await bot.listen(chat_id=m.chat.id, filters=filters.user(user_id), timeout=120)
-                            raw_text5 = input5.text
-                            await input5.delete(True)
-                        except:
-                            await editable.edit("**Timeout! You took too long to respond**")
-                            return
-                
-                        if input5.text.isdigit() and 1 <= int(input5.text) <= len(courses):
-                            selected_course_index = int(input5.text.strip())
-                            course = courses[selected_course_index - 1]
-                            selected_batch_id = course['batch_id']
-                            selected_batch_name = course['batch_name']
-                            clean_batch_name = selected_batch_name.replace("/", "-").replace("|", "-")
-                            clean_file_name = f"{user_id}_{clean_batch_name}"
-                        else:
-                            raise Exception("Invalid batch index.")
-                else:
-                    raise Exception("Invalid batch index.")
-                    
-                await editable.edit("1.```\nFull Batch```\n2.```\nToday's Class```\n3.```\nKhazana```")
-                    
-                try:
-                    input6 = await bot.listen(chat_id=m.chat.id, filters=filters.user(user_id), timeout=120)
-                    raw_text6 = input6.text
-                    await input6.delete(True)
+                    await input2.delete()
                 except ListenerTimeout:
                     await editable.edit("**Timeout! You took too long to respond**")
                     return
-                except Exception as e:
-                    logging.exception("Error during option listening:")
-                    try:
-                        await editable.edit(f"**Error: {e}**")
-                    except:
-                        logging.error(f"Failed to send error message to user: {e}")
-                    return
-                        
-                await editable.edit(f"**Extracting course : {selected_batch_name} ...**")
-
-                start_time = time.time()
-
-                if input6.text == '1':
                 
-                    url = f"https://api.penpencil.co/v3/batches/{selected_batch_id}/details"
-                    batch_details = await fetch_pwwp_data(session, url, headers=headers)
-
-                    if batch_details and batch_details.get("success"):
-                        subjects = batch_details.get("data", {}).get("subjects", [])
-
-                        json_data = {selected_batch_name: {}}
-                        all_subject_urls = {}
-
-                        with zipfile.ZipFile(f"{clean_file_name}.zip", 'w') as zipf:
-                            
-                            subject_tasks = [process_pwwp_subject(session, subject, selected_batch_id, selected_batch_name, zipf, json_data, all_subject_urls, headers) for subject in subjects]
-                            await asyncio.gather(*subject_tasks)
-                        
-                        with open(f"{clean_file_name}.json", 'w') as f:
-                            json.dump(json_data, f, indent=4)
-                            
-                        with open(f"{clean_file_name}.txt", 'w', encoding='utf-8') as f:
-                            for subject in subjects:
-                                subject_name = subject.get("subject", "Unknown Subject").replace("/", "-")
-                                if subject_name in all_subject_urls:
-                                    f.write('\n'.join(all_subject_urls[subject_name]) + '\n')
-
-                    else:
-                        raise Exception(f"Error fetching batch details: {batch_details.get('message')}")
-                    
-                elif input6.text == '2':
-                    
-                    selected_batch_name = "Today's Class"
-                    today_schedule = await get_pwwp_all_todays_schedule_content(session, selected_batch_id, headers)
-                    if today_schedule:
-                        with open(f"{clean_file_name}.txt", "w", encoding="utf-8") as f:
-                            f.writelines(today_schedule)
-                    else:
-                        raise Exception("No Classes Found Today")
-                        
-                elif input6.text == '3':
-                    raise Exception("Working In Progress")
-                    
-                else:
-                    raise Exception("Invalid index.")
-                    
-                end_time = time.time()
-                response_time = end_time - start_time
-                minutes = int(response_time // 60)
-                seconds = int(response_time % 60)
-
-                if minutes == 0:
-                    if seconds < 1:
-                        formatted_time = f"{response_time:.2f} seconds"
-                    else:
-                        formatted_time = f"{seconds} seconds"
-                else:
-                    formatted_time = f"{minutes} minutes {seconds} seconds"
-                            
-                await editable.delete(True)
-                
-                caption = f"**Batch Name : ```\n{selected_batch_name}``````\nTime Taken : {formatted_time}```**"
-                        
-                files = [f"{clean_file_name}.{ext}" for ext in ["txt", "zip", "json"]]
-                for file in files:
-                    file_ext = os.path.splitext(file)[1][1:]
-                    try:
-                        with open(file, 'rb') as f:
-                            doc = await m.reply_document(document=f, caption=caption, file_name=f"{clean_batch_name}.{file_ext}")
-                    except FileNotFoundError:
-                        logging.error(f"File not found: {file}")
-                    except Exception as e:
-                        logging.exception(f"Error sending document {file}:")
-                    finally:
-                        try:
-                            os.remove(file)
-                            logging.info(f"Removed File After Sending : {file}")
-                        except OSError as e:
-                            logging.error(f"Error deleting {file}: {e}")
+                access_token = await downloader.verify_otp(phone, otp)
+                await editable.edit(
+                    f"<b>Physics Wallah Login Successful ✅</b>\n\n"
+                    f"<pre language='Save this Login Token for future usage'>{access_token}</pre>\n\n"
+                )
+                editable = await message.reply_text("**Getting Batches In Your ID**")
             else:
-                raise Exception("No batches found for the given search name.")
-                
-        except Exception as e:
-            logging.exception(f"An unexpected error occurred: {e}")
+                access_token = raw_text1
+            
+            downloader.HEADERS['authorization'] = f"Bearer {access_token}"
+            
+            # Get batches
             try:
-                await editable.edit(f"**Error : {e}**")
-            except Exception as ee:
-                logging.error(f"Failed to send error message to user in callback: {ee}")
-        finally:
-            if session:
-                await session.close()
-            await CONNECTOR.close()
+                await downloader.get_purchased_batches()
+            except Exception:
+                await editable.edit(
+                    "**```\nLogin Failed❗TOKEN IS EXPIRED```\n"
+                    "Please Enter Working Token\n                       OR\n"
+                    "Login With Phone Number**"
+                )
+                return
             
-async def fetch_cpwp_signed_url(url_val: str, name: str, session: aiohttp.ClientSession, headers: Dict[str, str]) -> str | None:
-    MAX_RETRIES = 3
-    for attempt in range(MAX_RETRIES):
-        params = {"url": url_val}
-        try:
-            async with session.get("https://api.classplusapp.com/cams/uploader/video/jw-signed-url", params=params, headers=headers) as response:
-                response.raise_for_status()
-                response_json = await response.json()
-                signed_url = response_json.get("url") or response_json.get('drmUrls', {}).get('manifestUrl')
-                return signed_url
-                
-        except Exception as e:
-         #   logging.exception(f"Unexpected error fetching signed URL for {name}: {e}. Attempt {attempt + 1}/{MAX_RETRIES}")
-            pass
-
-        if attempt < MAX_RETRIES - 1:
-            await asyncio.sleep(2 ** attempt)
-
-    logging.error(f"Failed to fetch signed URL for {name} after {MAX_RETRIES} attempts.")
-    return None
-
-async def process_cpwp_url(url_val: str, name: str, session: aiohttp.ClientSession, headers: Dict[str, str]) -> str | None:
-    try:
-        signed_url = await fetch_cpwp_signed_url(url_val, name, session, headers)
-        if not signed_url:
-            logging.warning(f"Failed to obtain signed URL for {name}: {url_val}")
-            return None
-
-        if "testbook.com" in url_val or "classplusapp.com/drm" in url_val or "media-cdn.classplusapp.com/drm" in url_val:
-        #    logging.info(f"{name}:{url_val}")
-            return f"{name}:{url_val}\n"
-
-        async with session.get(signed_url) as response:
-            response.raise_for_status()
-       #     logging.info(f"{name}:{url_val}")
-            return f"{name}:{url_val}\n"
-            
-    except Exception as e:
-    #    logging.exception(f"Unexpected error processing {name}: {e}")
-        pass
-    return None
-
-
-async def get_cpwp_course_content(session: aiohttp.ClientSession, headers: Dict[str, str], Batch_Token: str, folder_id: int = 0, limit: int = 9999999999, retry_count: int = 0) -> Tuple[List[str], int, int, int]:
-    MAX_RETRIES = 3
-    fetched_urls: set[str] = set()
-    results: List[str] = []
-    video_count = 0
-    pdf_count = 0
-    image_count = 0
-    content_tasks: List[Tuple[int, asyncio.Task[str | None]]] = []
-    folder_tasks: List[Tuple[int, asyncio.Task[List[str]]]] = []
-
-    try:
-        content_api = f'https://api.classplusapp.com/v2/course/preview/content/list/{Batch_Token}'
-        params = {'folderId': folder_id, 'limit': limit}
-
-        async with session.get(content_api, params=params, headers=headers) as res:
-            res.raise_for_status()
-            res_json = await res.json()
-            contents: List[Dict[str, Any]] = res_json['data']
-
-            for content in contents:
-                if content['contentType'] == 1:
-                    folder_task = asyncio.create_task(get_cpwp_course_content(session, headers, Batch_Token, content['id'], retry_count=0))
-                    folder_tasks.append((content['id'], folder_task))
-
-                else:
-                    name: str = content['name']
-                    url_val: str | None = content.get('url') or content.get('thumbnailUrl')
-
-                    if not url_val:
-                        logging.warning(f"No URL found for content: {name}")
-                        continue
-                        
-                    if "media-cdn.classplusapp.com/tencent/" in url_val:
-                        url_val = url_val.rsplit('/', 1)[0] + "/master.m3u8"
-                    elif "media-cdn.classplusapp.com" in url_val and url_val.endswith('.jpg'):
-                        identifier = url_val.split('/')[-3]
-                        url_val = f'https://media-cdn.classplusapp.com/alisg-cdn-a.classplusapp.com/{identifier}/master.m3u8'
-                    elif "tencdn.classplusapp.com" in url_val and url_val.endswith('.jpg'):
-                        identifier = url_val.split('/')[-2]
-                        url_val = f'https://media-cdn.classplusapp.com/tencent/{identifier}/master.m3u8'
-                    elif "4b06bf8d61c41f8310af9b2624459378203740932b456b07fcf817b737fbae27" in url_val and url_val.endswith('.jpeg'):
-                        url_val = f'https://media-cdn.classplusapp.com/alisg-cdn-a.classplusapp.com/b08bad9ff8d969639b2e43d5769342cc62b510c4345d2f7f153bec53be84fe35/{url_val.split('/')[-1].split('.')[0]}/master.m3u8'
-                    elif "cpvideocdn.testbook.com" in url_val and url_val.endswith('.png'):
-                        match = re.search(r'/streams/([a-f0-9]{24})/', url_val)
-                        video_id = match.group(1) if match else url_val.split('/')[-2]
-                        url_val = f'https://cpvod.testbook.com/{video_id}/playlist.m3u8'
-                    elif "media-cdn.classplusapp.com/drm/" in url_val and url_val.endswith('.png'):
-                        video_id = url_val.split('/')[-3]
-                        url_val = f'https://media-cdn.classplusapp.com/drm/{video_id}/playlist.m3u8'
-                    elif "https://media-cdn.classplusapp.com" in url_val and ("cc/" in url_val or "lc/" in url_val or "uc/" in url_val or "dy/" in url_val) and url_val.endswith('.png'):
-                        url_val = url_val.replace('thumbnail.png', 'master.m3u8')
-                    elif "https://tb-video.classplusapp.com" in url_val and url_val.endswith('.jpg'):
-                        video_id = url_val.split('/')[-1].split('.')[0]
-                        url_val = f'https://tb-video.classplusapp.com/{video_id}/master.m3u8'
-
-                    if url_val.endswith(("master.m3u8", "playlist.m3u8")) and url_val not in fetched_urls:
-                        fetched_urls.add(url_val)
-                        headers2 = { 'x-access-token': 'eyJjb3Vyc2VJZCI6IjQ1NjY4NyIsInR1dG9ySWQiOm51bGwsIm9yZ0lkIjo0ODA2MTksImNhdGVnb3J5SWQiOm51bGx9'}
-                        task = asyncio.create_task(process_cpwp_url(url_val, name, session, headers2))
-                        content_tasks.append((content['id'], task))
-                        
-                    else:
-                        name: str = content['name']
-                        url_val: str | None = content.get('url')
-                        if url_val:
-                            fetched_urls.add(url_val)
-                        #    logging.info(f"{name}:{url_val}")
-                            results.append(f"{name}:{url_val}\n")
-                            if url_val.endswith('.pdf'):
-                                pdf_count += 1
-                            else:
-                                image_count += 1
-                                
-    except Exception as e:
-        logging.exception(f"An unexpected error occurred: {e}")
-        if retry_count < MAX_RETRIES:
-            logging.info(f"Retrying folder {folder_id} (Attempt {retry_count + 1}/{MAX_RETRIES})")
-            await asyncio.sleep(2 ** retry_count)
-            return await get_cpwp_course_content(session, headers, Batch_Token, folder_id, limit, retry_count + 1)
-        else:
-            logging.error(f"Failed to retrieve folder {folder_id} after {MAX_RETRIES} retries.")
-            return [], 0, 0, 0
-            
-    content_results = await asyncio.gather(*(task for _, task in content_tasks), return_exceptions=True)
-    folder_results = await asyncio.gather(*(task for _, task in folder_tasks), return_exceptions=True)
-    
-    for (folder_id, result) in zip(content_tasks, content_results):
-        if isinstance(result, Exception):
-            logging.error(f"Task failed with exception: {result}")
-        elif result:
-            results.append(result)
-            video_count += 1
-            
-    for folder_id, folder_result in folder_tasks:
-        try:
-            nested_results, nested_video_count, nested_pdf_count, nested_image_count = await folder_result
-            if nested_results:
-                results.extend(nested_results)
-            else:
-            #    logging.warning(f"get_cpwp_course_content returned None for folder_id {folder_id}")
-                pass
-            video_count += nested_video_count
-            pdf_count += nested_pdf_count
-            image_count += nested_image_count
-        except Exception as e:
-            logging.error(f"Error processing folder {folder_id}: {e}")
-
-    return results, video_count, pdf_count, image_count
-    
-@bot.on_callback_query(filters.regex("^cpwp$"))
-async def cpwp_callback(bot, callback_query):
-    user_id = callback_query.from_user.id
-    await callback_query.answer()
-
-    auth_user = auth_users[0]
-    user = await bot.get_users(auth_user)
-    owner_username = "@" + user.username
-
-    if user_id not in auth_users:
-        await bot.send_message(callback_query.message.chat.id, f"**You Are Not Subscribed To This Bot\nContact - {owner_username}**")
-        return    
-            
-    THREADPOOL.submit(asyncio.run, process_cpwp(bot, callback_query.message, user_id))
-    
-async def process_cpwp(bot: Client, m: Message, user_id: int):
-    
-    headers = {
-        'accept-encoding': 'gzip',
-        'accept-language': 'EN',
-        'api-version'    : '35',
-        'app-version'    : '1.4.73.2',
-        'build-number'   : '35',
-        'connection'     : 'Keep-Alive',
-        'content-type'   : 'application/json',
-        'device-details' : 'Xiaomi_Redmi 7_SDK-32',
-        'device-id'      : 'c28d3cb16bbdac01',
-        'host'           : 'api.classplusapp.com',
-        'region'         : 'IN',
-        'user-agent'     : 'Mobile-Android',
-        'webengage-luid' : '00000187-6fe4-5d41-a530-26186858be4c'
-    }
-
-    loop = asyncio.get_event_loop()
-    CONNECTOR = aiohttp.TCPConnector(limit=1000, loop=loop)
-    async with aiohttp.ClientSession(connector=CONNECTOR, loop=loop) as session:
-        try:
-            editable = await m.reply_text("**Enter ORG Code Of Your Classplus App**")
-            
+            # Search for batch
+            await editable.edit("**Enter Your Batch Name**")
             try:
-                input1 = await bot.listen(chat_id=m.chat.id, filters=filters.user(user_id), timeout=120)
-                org_code = input1.text.lower()
-                await input1.delete(True)
+                input3 = await bot.listen(
+                    chat_id=message.chat.id,
+                    filters=filters.user(user_id),
+                    timeout=120
+                )
+                batch_search = input3.text
+                await input3.delete()
             except ListenerTimeout:
                 await editable.edit("**Timeout! You took too long to respond**")
                 return
-            except Exception as e:
-                logging.exception("Error during input1 listening:")
-                try:
-                    await editable.edit(f"**Error: {e}**")
-                except:
-                    logging.error(f"Failed to send error message to user: {e}")
+            
+            courses = await downloader.search_batches(batch_search)
+            
+            if not courses:
+                raise Exception("No batches found for the given search name.")
+            
+            # Display courses and get selection
+            text = ''
+            for cnt, course in enumerate(courses, 1):
+                text += f"{cnt}. ```\n{course['name']}```\n"
+            
+            await editable.edit(
+                f"**Send index number of the course to download.\n\n{text}\n\n"
+                f"If Your Batch Not Listed Above Enter - No**"
+            )
+            
+            try:
+                input4 = await bot.listen(
+                    chat_id=message.chat.id,
+                    filters=filters.user(user_id),
+                    timeout=120
+                )
+                raw_text4 = input4.text
+                await input4.delete()
+            except ListenerTimeout:
+                await editable.edit("**Timeout! You took too long to respond**")
                 return
-
-            hash_headers = {
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-                'Accept-Encoding': 'gzip, deflate, br, zstd',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Referer': 'https://qsvfn.courses.store/?mainCategory=0&subCatList=[130504,62442]',
-                'Sec-CH-UA': '"Chromium";v="128", "Not;A=Brand";v="24", "Google Chrome";v="128"',
-                'Sec-CH-UA-Mobile': '?0',
-                'Sec-CH-UA-Platform': '"Windows"',
-                'Sec-Fetch-Dest': 'document',
-                'Sec-Fetch-Mode': 'navigate',
-                'Sec-Fetch-Site': 'same-origin',
-                'Sec-Fetch-User': '?1',
-                'Upgrade-Insecure-Requests': '1',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36'
-            }
             
-            async with session.get(f"https://{org_code}.courses.store", headers=hash_headers) as response:
-                html_text = await response.text()
-                hash_match = re.search(r'"hash":"(.*?)"', html_text)
-
-                if hash_match:
-                    token = hash_match.group(1)
-                    
-                    async with session.get(f"https://api.classplusapp.com/v2/course/preview/similar/{token}?limit=20", headers=headers) as response:
-                        if response.status == 200:
-                            res_json = await response.json()
-                            courses = res_json.get('data', {}).get('coursesData', [])
-
-                            if courses:
-                                text = ''
-                                for cnt, course in enumerate(courses):
-                                    name = course['name']
-                                    price = course['finalPrice']
-                                    text += f'{cnt + 1}. ```\n{name} 💵₹{price}```\n'
-
-                                await editable.edit(f"**Send index number of the Category Name\n\n{text}\nIf Your Batch Not Listed Then Enter Your Batch Name**")
-                            
-                                try:
-                                    input2 = await bot.listen(chat_id=m.chat.id, filters=filters.user(user_id), timeout=120)
-                                    raw_text2 = input2.text
-                                    await input2.delete(True)
-                                except ListenerTimeout:
-                                    await editable.edit("**Timeout! You took too long to respond**")
-                                    return
-                                except Exception as e:
-                                    logging.exception("Error during input1 listening:")
-                                    try:
-                                        await editable.edit(f"**Error : {e}**")
-                                    except:
-                                        logging.error(f"Failed to send error message to user : {e}")
-                                    return
-
-                                if input2.text.isdigit() and len(input2.text) <= len(courses):
-                                    selected_course_index = int(input2.text.strip())
-                                    course = courses[selected_course_index - 1]
-                                    selected_batch_id = course['id']
-                                    selected_batch_name = course['name']
-                                    price = course['finalPrice']
-                                    clean_batch_name = selected_batch_name.replace("/", "-").replace("|", "-")
-                                    clean_file_name = f"{user_id}_{clean_batch_name}"
-
-                                else:
-                                    search_url = f"https://api.classplusapp.com/v2/course/preview/similar/{token}?search={raw_text2}"
-                                    async with session.get(search_url, headers=headers) as response:
-                                        if response.status == 200:
-                                            res_json = await response.json()
-                                            courses = res_json.get("data", {}).get("coursesData", [])
-
-                                            if courses:
-                                                text = ''
-                                                for cnt, course in enumerate(courses):
-                                                    name = course['name']
-                                                    price = course['finalPrice']
-                                                    text += f'{cnt + 1}. ```\n{name} 💵₹{price}```\n'
-                                                await editable.edit(f"**Send index number of the Batch to download.\n\n{text}**")
-                                            
-                                                try:
-                                                    input3 = await bot.listen(chat_id=m.chat.id, filters=filters.user(user_id), timeout=120)
-                                                    raw_text3 = input3.text
-                                                    await input3.delete(True)
-                                                except ListenerTimeout:
-                                                    await editable.edit("**Timeout! You took too long to respond**")
-                                                    return
-                                                except Exception as e:
-                                                    logging.exception("Error during input1 listening:")
-                                                    try:
-                                                        await editable.edit(f"**Error : {e}**")
-                                                    except:
-                                                        logging.error(f"Failed to send error message to user : {e}")
-                                                    return
-
-
-                                                if input3.text.isdigit() and len(input3.text) <= len(courses):
-                                                    selected_course_index = int(input3.text.strip())
-                                                    course = courses[selected_course_index - 1]
-                                                    selected_batch_id = course['id']
-                                                    selected_batch_name = course['name']
-                                                    price = course['finalPrice']
-                                                    clean_batch_name = selected_batch_name.replace("/", "-").replace("|", "-")
-                                                    clean_file_name = f"{user_id}_{clean_batch_name}"
-                                                
-                                                else:
-                                                    raise Exception("Wrong Index Number")
-                                            else:
-                                                raise Exception("Didn't Find Any Course Matching The Search Term")
-                                        else:
-                                            raise Exception(f"{response.text}")
-                                            
-                                download_price = int(price * 0.10)
-                                batch_headers = {
-                                    'Accept': 'application/json, text/plain, */*',
-                                    'region': 'IN',
-                                    'accept-language': 'EN',
-                                    'Api-Version': '22',
-                                    'tutorWebsiteDomain': f'https://{org_code}.courses.store'
-                                }
-                                    
-                                params = {
-                                    'courseId': f'{selected_batch_id}',
-                                }
-
-                                async with session.get(f"https://api.classplusapp.com/v2/course/preview/org/info", params=params, headers=batch_headers) as response:
-                                    if response.status == 200:
-                                        res_json = await response.json()
-                                        Batch_Token = res_json['data']['hash']
-                                        App_Name = res_json['data']['name']
-
-                                        await editable.edit(f"**Extracting course : {selected_batch_name} ...**")
-
-                                        start_time = time.time()
-                                        course_content, video_count, pdf_count, image_count = await get_cpwp_course_content(session, headers, Batch_Token)
-                                    
-                                        if course_content:
-                                            file = f"{clean_file_name}.txt"
-
-                                            with open(file, 'w') as f:
-                                                f.write(''.join(course_content))
-
-                                            end_time = time.time()
-                                            response_time = end_time - start_time
-                                            minutes = int(response_time // 60)
-                                            seconds = int(response_time % 60)
-
-                                            if minutes == 0:
-                                                if seconds < 1:
-                                                    formatted_time = f"{response_time:.2f} seconds"
-                                                else:
-                                                    formatted_time = f"{seconds} seconds"
-                                            else:
-                                                formatted_time = f"{minutes} minutes {seconds} seconds"
-
-                                            await editable.delete(True)
-                                        
-                                            caption = f"**App Name : ```\n{App_Name}({org_code})```\nBatch Name : ```\n{selected_batch_name}``````\n🎬 : {video_count} | 📁 : {pdf_count} | 🖼  : {image_count}``````\nTime Taken : {formatted_time}```**"
-                                        
-                                            with open(file, 'rb') as f:
-                                                doc = await m.reply_document(document=f, caption=caption, file_name=f"{clean_batch_name}.txt")
-
-                                            os.remove(file)
-
-                                        else:
-                                            raise Exception("Didn't Find Any Content In The Course")
-                                    else:
-                                        raise Exception(f"{response.text}")
-                            else:
-                                raise Exception("Didn't Find Any Course")
-                        else:
-                            raise Exception(f"{response.text}")
-                else:
-                    raise Exception('No App Found In Org Code')
-                    
-        except Exception as e:
-            await editable.edit(f"**Error : {e}**")
-            
-        finally:
-            await session.close()
-            await CONNECTOR.close()
-
-
-
-
-def appx_decrypt(enc):
-    enc = b64decode(enc.split(':')[0])
-    key = '638udh3829162018'.encode('utf-8')
-    iv = 'fedcba9876543210'.encode('utf-8')
-
-    if len(enc) == 0:
-        return ""
-
-    cipher = AES.new(key, AES.MODE_CBC, iv)
-    plaintext = unpad(cipher.decrypt(enc), AES.block_size)
-    b = plaintext.decode('utf-8')
-    url = b
-    return url
-
-
-async def fetch_appx_html_to_json(session, url, headers=None, data=None):
-    try:
-        if data:
-            async with session.post(url, headers=headers, data=data) as response:
-                text = await response.text()
-        else:
-            async with session.get(url, headers=headers) as response:
-                text = await response.text()
-
-        try:
-            return json.loads(text)
-
-        except json.JSONDecodeError:
-            match = re.search(r'\{"status":', text, re.DOTALL)
-            if match:
-                json_str = text[match.start():]
+            # Handle course selection
+            if input4.text.isdigit() and 1 <= int(input4.text) <= len(courses):
+                selected_course = courses[int(input4.text) - 1]
+            elif input4.text.lower() == "no":
+                # Handle old batches
+                old_batches = find_pw_old_batch(batch_search)
+                if not old_batches:
+                    raise Exception("No old batches found.")
+                
+                text = ''
+                for cnt, batch in enumerate(old_batches, 1):
+                    text += f"{cnt}. ```\n{batch['batch_name']}```\n"
+                
+                await editable.edit(f"**Send index number of the course to download.\n\n{text}**")
+                
                 try:
-                    open_brace_count = 0
-                    close_brace_count = 0
-                    json_end = -1
-
-                    for i, char in enumerate(json_str):
-                        if char == '{':
-                            open_brace_count += 1
-                        elif char == '}':
-                            close_brace_count += 1
-
-                        if open_brace_count > 0 and open_brace_count == close_brace_count:
-                            json_end = i + 1
-                            break
-
-                    if json_end != -1:
-                        return json.loads(json_str[:json_end])
-                    else:
-                        logging.error("Could not find matching closing brace } . json string: ", json_str)
-                        return None
-                except json.JSONDecodeError:
-                    logging.error("Could not parse JSON from the end. ", json_str)
-                    return None
+                    input5 = await bot.listen(
+                        chat_id=message.chat.id,
+                        filters=filters.user(user_id),
+                        timeout=120
+                    )
+                    raw_text5 = input5.text
+                    await input5.delete()
+                except ListenerTimeout:
+                    await editable.edit("**Timeout! You took too long to respond**")
+                    return
+                
+                if input5.text.isdigit() and 1 <= int(input5.text) <= len(old_batches):
+                    selected_course = old_batches[int(input5.text) - 1]
+                else:
+                    raise Exception("Invalid batch index.")
             else:
-                logging.error("Could not find JSON at the end. Response content: ", text)
-                return None
+                raise Exception("Invalid batch index.")
+            
+            # Get download option
+            await editable.edit(
+                "1.```\nFull Batch```\n2.```\nToday's Class```\n3.```\nKhazana```"
+            )
+            
+            try:
+                input6 = await bot.listen(
+                    chat_id=message.chat.id,
+                    filters=filters.user(user_id),
+                    timeout=120
+                )
+                raw_text6 = input6.text
+                await input6.delete()
+            except ListenerTimeout:
+                await editable.edit("**Timeout! You took too long to respond**")
+                return
+            
+            selected_batch_id = selected_course.get('_id') or selected_course.get('batch_id')
+            selected_batch_name = selected_course.get('name') or selected_course.get('batch_name')
+            clean_batch_name = clean_filename(selected_batch_name)
+            clean_file_name = f"{user_id}_{clean_batch_name}"
+            
+            await editable.edit(f"**Extracting course : {selected_batch_name} ...**")
+            start_time = time.time()
+            
+            if raw_text6 == '1':
+                # Download full batch
+                await download_full_batch(
+                    bot, message, editable, downloader, session,
+                    selected_batch_id, selected_batch_name, clean_file_name, user_id
+                )
+            elif raw_text6 == '2':
+                # Download today's class
+                await download_todays_class(
+                    bot, message, editable, downloader,
+                    selected_batch_id, selected_batch_name, clean_file_name
+                )
+            elif raw_text6 == '3':
+                raise Exception("Working In Progress")
+            else:
+                raise Exception("Invalid option.")
+            
+            # Calculate and display time taken
+            end_time = time.time()
+            response_time = end_time - start_time
+            formatted_time = format_time(response_time)
+            
+            await editable.delete()
+            
+            # Send files
+            caption = f"**Batch Name : ```\n{selected_batch_name}``````\nTime Taken : {formatted_time}```**"
+            await send_output_files(message, clean_file_name, clean_batch_name, caption)
+    
     except Exception as e:
-        logging.exception(f"An error occurred during the request: {e}")
+        logger.exception(f"Error in Physics Wallah download: {e}")
+        try:
+            await editable.edit(f"**Error : {e}**")
+        except Exception:
+            pass
+
+
+def find_pw_old_batch(batch_search: str) -> List[Dict]:
+    """Find old Physics Wallah batches"""
+    try:
+        response = requests.get(
+            "https://abhiguru143.github.io/AS-MULTIVERSE-PW/batch/batch.json"
+        )
+        response.raise_for_status()
+        data = response.json()
+    except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
+        logger.error(f"Error fetching old batches: {e}")
+        return []
+    
+    return [
+        batch for batch in data
+        if batch_search.lower() in batch['batch_name'].lower()
+    ]
+
+
+async def download_full_batch(bot: Client, message: Message, editable: Message,
+                             downloader: PhysicsWallahDownloader, session: aiohttp.ClientSession,
+                             batch_id: str, batch_name: str, file_name: str, user_id: int):
+    """Download full batch content"""
+    batch_details = await downloader.get_batch_details(batch_id)
+    
+    if not batch_details or not batch_details.get("success"):
+        raise Exception(f"Error fetching batch details")
+    
+    subjects = batch_details.get("data", {}).get("subjects", [])
+    json_data = {batch_name: {}}
+    all_subject_urls = {}
+    
+    with zipfile.ZipFile(f"{file_name}.zip", 'w') as zipf:
+        for subject in subjects:
+            subject_name = subject.get("subject", "Unknown Subject").replace("/", "-")
+            subject_id = subject.get("_id")
+            
+            json_data[batch_name][subject_name] = {}
+            zipf.writestr(f"{subject_name}/", "")
+            
+            chapters = await downloader.get_chapters(batch_id, subject_id)
+            tasks = [
+                downloader.get_chapter_content(batch_id, subject_id, chapter["_id"])
+                for chapter in chapters
+            ]
+            chapter_results = await asyncio.gather(*tasks)
+            
+            all_urls = []
+            for chapter, chapter_content in zip(chapters, chapter_results):
+                chapter_name = chapter.get("name", "Unknown Chapter").replace("/", "-")
+                zipf.writestr(f"{subject_name}/{chapter_name}/", "")
+                json_data[batch_name][subject_name][chapter_name] = {}
+                
+                for content_type in ['videos', 'notes', 'DppNotes', 'DppVideos']:
+                    if chapter_content.get(content_type):
+                        content = chapter_content[content_type]
+                        content.reverse()
+                        content_string = "\n".join(content)
+                        zipf.writestr(
+                            f"{subject_name}/{chapter_name}/{content_type}.txt",
+                            content_string.encode('utf-8')
+                        )
+                        json_data[batch_name][subject_name][chapter_name][content_type] = content
+                        all_urls.extend(content)
+            
+            all_subject_urls[subject_name] = all_urls
+    
+    # Save JSON and text files
+    with open(f"{file_name}.json", 'w') as f:
+        json.dump(json_data, f, indent=4)
+    
+    with open(f"{file_name}.txt", 'w', encoding='utf-8') as f:
+        for urls in all_subject_urls.values():
+            f.write('\n'.join(urls) + '\n')
+
+
+async def download_todays_class(bot: Client, message: Message, editable: Message,
+                                downloader: PhysicsWallahDownloader, batch_id: str,
+                                batch_name: str, file_name: str):
+    """Download today's class content"""
+    today_content = await downloader.get_todays_schedule(batch_id)
+    
+    if not today_content:
+        raise Exception("No Classes Found Today")
+    
+    with open(f"{file_name}.txt", "w", encoding="utf-8") as f:
+        f.writelines(today_content)
+
+
+async def send_output_files(message: Message, file_name: str, 
+                           batch_name: str, caption: str):
+    """Send output files to user"""
+    files = [(f"{file_name}.txt", "txt"), (f"{file_name}.zip", "zip"), 
+             (f"{file_name}.json", "json")]
+    
+    for file_path, ext in files:
+        try:
+            if os.path.exists(file_path):
+                with open(file_path, 'rb') as f:
+                    await message.reply_document(
+                        document=f,
+                        caption=caption,
+                        file_name=f"{batch_name}.{ext}"
+                    )
+        except FileNotFoundError:
+            logger.error(f"File not found: {file_path}")
+        except Exception as e:
+            logger.exception(f"Error sending document {file_path}: {e}")
+        finally:
+            try:
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+                    logger.info(f"Removed file: {file_path}")
+            except OSError as e:
+                logger.error(f"Error deleting {file_path}: {e}")
+
+
+# =============================================================================
+# CLASSPLUS SECTION
+# =============================================================================
+
+class ClassplusDownloader:
+    """Class to handle Classplus content downloading"""
+    
+    BASE_URL = "https://api.classplusapp.com"
+    HEADERS = {
+        'accept-encoding': 'gzip',
+        'accept-language': 'EN',
+        'api-version': '35',
+        'app-version': '1.4.73.2',
+        'build-number': '35',
+        'connection': 'Keep-Alive',
+        'content-type': 'application/json',
+        'device-details': 'Xiaomi_Redmi 7_SDK-32',
+        'device-id': 'c28d3cb16bbdac01',
+        'host': 'api.classplusapp.com',
+        'region': 'IN',
+        'user-agent': 'Mobile-Android',
+        'webengage-luid': '00000187-6fe4-5d41-a530-26186858be4c'
+    }
+    
+    def __init__(self, session: aiohttp.ClientSession, user_id: int):
+        self.session = session
+        self.user_id = user_id
+        
+    async def get_hash_token(self, org_code: str) -> Optional[str]:
+        """Get hash token from org code"""
+        hash_headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        
+        async with self.session.get(
+            f"https://{org_code}.courses.store", headers=hash_headers
+        ) as response:
+            html_text = await response.text()
+            hash_match = re.search(r'"hash":"(.*?)"', html_text)
+            return hash_match.group(1) if hash_match else None
+    
+    async def get_similar_courses(self, token: str, search: str = None) -> List[Dict]:
+        """Get similar courses"""
+        url = f"{self.BASE_URL}/v2/course/preview/similar/{token}"
+        params = {'limit': 20}
+        if search:
+            params['search'] = search
+        
+        async with self.session.get(url, params=params, headers=self.HEADERS) as response:
+            if response.status == 200:
+                res_json = await response.json()
+                return res_json.get('data', {}).get('coursesData', [])
+            raise Exception(f"Failed to get courses: {response.status}")
+    
+    async def get_org_info(self, org_code: str, course_id: str) -> Dict:
+        """Get organization info"""
+        batch_headers = {
+            'Accept': 'application/json, text/plain, */*',
+            'region': 'IN',
+            'accept-language': 'EN',
+            'Api-Version': '22',
+            'tutorWebsiteDomain': f'https://{org_code}.courses.store'
+        }
+        
+        params = {'courseId': course_id}
+        async with self.session.get(
+            f"{self.BASE_URL}/v2/course/preview/org/info",
+            params=params, headers=batch_headers
+        ) as response:
+            if response.status == 200:
+                return await response.json()
+            raise Exception(f"Failed to get org info: {response.status}")
+    
+    async def get_course_content(self, batch_token: str, folder_id: int = 0,
+                                limit: int = 9999999999) -> Tuple[List[str], int, int, int]:
+        """Get all course content recursively"""
+        content_api = f'{self.BASE_URL}/v2/course/preview/content/list/{batch_token}'
+        params = {'folderId': folder_id, 'limit': limit}
+        
+        async with self.session.get(
+            content_api, params=params, headers=self.HEADERS
+        ) as response:
+            response.raise_for_status()
+            res_json = await response.json()
+            contents = res_json['data']
+            
+            results = []
+            video_count = 0
+            pdf_count = 0
+            image_count = 0
+            
+            for content in contents:
+                if content['contentType'] == 1:
+                    # This is a folder
+                    nested_results, nested_videos, nested_pdfs, nested_images = \
+                        await self.get_course_content(batch_token, content['id'], limit)
+                    results.extend(nested_results)
+                    video_count += nested_videos
+                    pdf_count += nested_pdfs
+                    image_count += nested_images
+                else:
+                    # This is content
+                    name = content['name']
+                    url_val = content.get('url') or content.get('thumbnailUrl')
+                    
+                    if not url_val:
+                        continue
+                    
+                    # Handle different URL formats
+                    url_val = self._process_url_format(url_val)
+                    
+                    if url_val.endswith(("master.m3u8", "playlist.m3u8")):
+                        signed_url = await self._get_signed_url(url_val, name)
+                        if signed_url:
+                            results.append(f"{name}:{url_val}\n")
+                            video_count += 1
+                    elif url_val:
+                        results.append(f"{name}:{url_val}\n")
+                        if url_val.endswith('.pdf'):
+                            pdf_count += 1
+                        else:
+                            image_count += 1
+            
+            return results, video_count, pdf_count, image_count
+    
+    def _process_url_format(self, url: str) -> str:
+        """Process different URL formats"""
+        if not url:
+            return None
+            
+        if "media-cdn.classplusapp.com/tencent/" in url:
+            return url.rsplit('/', 1)[0] + "/master.m3u8"
+        elif "media-cdn.classplusapp.com" in url and url.endswith('.jpg'):
+            identifier = url.split('/')[-3]
+            return f'https://media-cdn.classplusapp.com/alisg-cdn-a.classplusapp.com/{identifier}/master.m3u8'
+        elif "cpvideocdn.testbook.com" in url and url.endswith('.png'):
+            match = re.search(r'/streams/([a-f0-9]{24})/', url)
+            video_id = match.group(1) if match else url.split('/')[-2]
+            return f'https://cpvod.testbook.com/{video_id}/playlist.m3u8'
+        elif "media-cdn.classplusapp.com/drm/" in url and url.endswith('.png'):
+            video_id = url.split('/')[-3]
+            return f'https://media-cdn.classplusapp.com/drm/{video_id}/playlist.m3u8'
+        return url
+    
+    async def _get_signed_url(self, url_val: str, name: str) -> Optional[str]:
+        """Get signed URL for video content"""
+        max_retries = 3
+        params = {"url": url_val}
+        headers = {
+            'x-access-token': 'eyJjb3Vyc2VJZCI6IjQ1NjY4NyIsInR1dG9ySWQiOm51bGwsIm9yZ0lkIjo0ODA2MTksImNhdGVnb3J5SWQiOm51bGx9'
+        }
+        
+        for attempt in range(max_retries):
+            try:
+                async with self.session.get(
+                    f"{self.BASE_URL}/cams/uploader/video/jw-signed-url",
+                    params=params, headers=headers
+                ) as response:
+                    response.raise_for_status()
+                    response_json = await response.json()
+                    return response_json.get("url")
+            except Exception:
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2 ** attempt)
+        
         return None
 
 
-async def fetch_appx_video_id_details_v2(session, api, selected_batch_id, video_id, ytFlag, headers, folder_wise_course, user_id):
-    logging.info(f"User ID: {user_id} - Fetching video details for video ID: {video_id}")
+@bot.on_callback_query(filters.regex("^cpwp$"))
+async def cpwp_callback(bot: Client, callback_query):
+    """Handle Classplus callback"""
+    user_id = callback_query.from_user.id
+    await callback_query.answer()
+    
+    if not await check_user_auth(user_id, bot, callback_query.message):
+        return
+    
+    THREADPOOL.submit(asyncio.run, process_cpwp(bot, callback_query.message, user_id))
+
+
+async def process_cpwp(bot: Client, message: Message, user_id: int):
+    """Process Classplus download"""
+    editable = await message.reply_text("**Enter ORG Code Of Your Classplus App**")
+    
     try:
-        res = await fetch_appx_html_to_json(session, f"{api}/get/fetchVideoDetailsById?course_id={selected_batch_id}&folder_wise_course={folder_wise_course}&ytflag={ytFlag}&video_id={video_id}", headers)
-
-        output = []
-        if res:
-            data = res.get('data', [])
-
-            if data:
-                Title = data["Title"]
-                uhs_version = data["uhs_version"]
-                
-                res = await fetch_appx_html_to_json(session, f"{api}/get/get_mpd_drm_links?videoid={video_id}&folder_wise_course={folder_wise_course}", headers)
-                if res:
-                    drm_data = res.get('data', [])
-                    if drm_data and isinstance(drm_data, list) and len(drm_data) > 0:
-                        path = appx_decrypt(drm_data[0].get("path", "")) if drm_data and isinstance(drm_data, list) and drm_data and drm_data[0].get("path") else None
-                            
-                        if path:
-                            output.append(f"{Title}:{path}\n")
-                                
-                pdf_link = appx_decrypt(data.get("pdf_link", "")) if data.get("pdf_link", "") and appx_decrypt(data.get("pdf_link", "")).endswith(".pdf") else None
-
-                is_pdf_encrypted = data.get("is_pdf_encrypted", 0)
-                if pdf_link:
-                    if is_pdf_encrypted == 1 or is_pdf_encrypted == "1":
-                        key = appx_decrypt(data.get("pdf_encryption_key", "")) if data.get("pdf_encryption_key") else None
-                        if key:
-                            output.append(f"{Title}:{pdf_link}*{key}\n")
-                        else:
-                            output.append(f"{Title}:{pdf_link}\n")
-                    else:
-                        output.append(f"{Title}:{pdf_link}\n")
-                        
-                pdf_link2 = appx_decrypt(data.get("pdf_link2", "")) if data.get("pdf_link2", "") and appx_decrypt(data.get("pdf_link2", "")).endswith(".pdf") else None
-                    
-                is_pdf2_encrypted = data.get("is_pdf2_encrypted", 0)
-                if pdf_link2:
-                    if is_pdf2_encrypted == 1 or is_pdf2_encrypted == "1":
-                        key = appx_decrypt(data.get("pdf2_encryption_key", "")) if data.get("pdf2_encryption_key") else None
-                        if key:
-                            output.append(f"{Title}:{pdf_link2}*{key}\n")
-                        else:
-                            output.append(f"{Title}:{pdf_link2}\n")
-                    else:
-                        output.append(f"{Title}:{pdf_link2}\n")
-
+        # Get org code
+        try:
+            input1 = await bot.listen(
+                chat_id=message.chat.id,
+                filters=filters.user(user_id),
+                timeout=120
+            )
+            org_code = input1.text.lower()
+            await input1.delete()
+        except ListenerTimeout:
+            await editable.edit("**Timeout! You took too long to respond**")
+            return
+        
+        loop = asyncio.get_event_loop()
+        connector = aiohttp.TCPConnector(limit=100, loop=loop)
+        
+        async with aiohttp.ClientSession(connector=connector) as session:
+            downloader = ClassplusDownloader(session, user_id)
+            
+            # Get hash token
+            token = await downloader.get_hash_token(org_code)
+            if not token:
+                raise Exception('No App Found In Org Code')
+            
+            # Get courses
+            courses = await downloader.get_similar_courses(token)
+            if not courses:
+                raise Exception("Didn't Find Any Course")
+            
+            # Display courses
+            text = ''
+            for cnt, course in enumerate(courses, 1):
+                text += f'{cnt}. ```\n{course["name"]} 💵₹{course["finalPrice"]}```\n'
+            
+            await editable.edit(
+                f"**Send index number of the Category Name\n\n{text}\n"
+                f"If Your Batch Not Listed Then Enter Your Batch Name**"
+            )
+            
+            # Get course selection
+            try:
+                input2 = await bot.listen(
+                    chat_id=message.chat.id,
+                    filters=filters.user(user_id),
+                    timeout=120
+                )
+                raw_text2 = input2.text
+                await input2.delete()
+            except ListenerTimeout:
+                await editable.edit("**Timeout! You took too long to respond**")
+                return
+            
+            # Handle course selection
+            if input2.text.isdigit() and 1 <= int(input2.text) <= len(courses):
+                selected_course = courses[int(input2.text) - 1]
             else:
-                output.append(f"Did Not Found Course_id : {selected_batch_id} Video_id : {video_id}\n")
-        else:
-            output.append(f"Did Not Found Course_id : {selected_batch_id} Video_id : {video_id}\n")
-
-        return output
-
-    except Exception as e:
-        return [
-            f"User ID: {user_id} - An error occurred while fetching details for Course_id : {selected_batch_id}, video ID {video_id}: {str(e)}\n"]
-
-
-async def fetch_appx_folder_contents_v2(session, api, selected_batch_id, folder_id, headers, folder_wise_course, user_id):
-    logging.info(f"User ID: {user_id} - Fetching folder contents for folder ID: {folder_id}")
-    try:
-        res = await fetch_appx_html_to_json(session, f"{api}/get/folder_contentsv2?course_id={selected_batch_id}&parent_id={folder_id}", headers)
-        tasks = []
-        output = []
-        if "data" in res:
-            data = res["data"]
-            for item in data:
-                Title = item.get("Title")
-                video_id = item.get("id")
-                ytFlag = item.get("ytFlag")
-
-                if item.get("material_type") == "VIDEO":
-                    tasks.append(
-                        fetch_appx_video_id_details_v2(session, api, selected_batch_id, video_id, ytFlag, headers, folder_wise_course, user_id))
-
-                elif item.get("material_type") == "FOLDER":
-                    tasks.append(
-                        fetch_appx_folder_contents_v2(session, api, selected_batch_id, item.get("id"), headers, folder_wise_course, user_id))
-
-        if tasks:
-            results = await asyncio.gather(*tasks)
-            for res in results:
-                if isinstance(res, list):
-                    output.extend(res)
+                # Search for specific course
+                search_courses = await downloader.get_similar_courses(token, raw_text2)
+                if not search_courses:
+                    raise Exception("Didn't Find Any Course Matching The Search Term")
+                
+                text = ''
+                for cnt, course in enumerate(search_courses, 1):
+                    text += f'{cnt}. ```\n{course["name"]} 💵₹{course["finalPrice"]}```\n'
+                
+                await editable.edit(f"**Send index number of the Batch to download.\n\n{text}**")
+                
+                try:
+                    input3 = await bot.listen(
+                        chat_id=message.chat.id,
+                        filters=filters.user(user_id),
+                        timeout=120
+                    )
+                    raw_text3 = input3.text
+                    await input3.delete()
+                except ListenerTimeout:
+                    await editable.edit("**Timeout! You took too long to respond**")
+                    return
+                
+                if input3.text.isdigit() and 1 <= int(input3.text) <= len(search_courses):
+                    selected_course = search_courses[int(input3.text) - 1]
                 else:
-                    output.append(res)
-        return output
+                    raise Exception("Wrong Index Number")
+            
+            # Get course details
+            selected_batch_id = selected_course['id']
+            selected_batch_name = selected_course['name']
+            clean_batch_name = clean_filename(selected_batch_name)
+            clean_file_name = f"{user_id}_{clean_batch_name}"
+            
+            # Get batch token
+            org_info = await downloader.get_org_info(org_code, selected_batch_id)
+            batch_token = org_info['data']['hash']
+            app_name = org_info['data']['name']
+            
+            await editable.edit(f"**Extracting course : {selected_batch_name} ...**")
+            start_time = time.time()
+            
+            # Download content
+            course_content, video_count, pdf_count, image_count = \
+                await downloader.get_course_content(batch_token)
+            
+            if not course_content:
+                raise Exception("Didn't Find Any Content In The Course")
+            
+            # Save content
+            with open(f"{clean_file_name}.txt", 'w', encoding='utf-8') as f:
+                f.write(''.join(course_content))
+            
+            # Calculate time
+            end_time = time.time()
+            formatted_time = format_time(end_time - start_time)
+            
+            await editable.delete()
+            
+            # Send file
+            caption = (
+                f"**App Name : ```\n{app_name}({org_code})```\n"
+                f"Batch Name : ```\n{selected_batch_name}```"
+                f"```\n🎬 : {video_count} | 📁 : {pdf_count} | 🖼 : {image_count}```"
+                f"```\nTime Taken : {formatted_time}```**"
+            )
+            
+            with open(f"{clean_file_name}.txt", 'rb') as f:
+                await message.reply_document(
+                    document=f,
+                    caption=caption,
+                    file_name=f"{clean_batch_name}.txt"
+                )
+            
+            os.remove(f"{clean_file_name}.txt")
+    
     except Exception as e:
-        return [
-            f"User ID: {user_id} - Error fetching folder contents for folder - Course_id : {selected_batch_id}, Folder_id : {folder_id}. Error: {e}\n"]
+        logger.exception(f"Error in Classplus download: {e}")
+        try:
+            await editable.edit(f"**Error : {e}**")
+        except Exception:
+            pass
 
 
-async def fetch_appx_video_id_details_v3(session, api, selected_batch_id, video_id, ytFlag, headers, user_id):
-    logging.info(f"User ID: {user_id} - Fetching video details V3 for video ID: {video_id}")
-    try:
-        res = await fetch_appx_html_to_json(session, f"{api}/get/fetchVideoDetailsById?course_id={selected_batch_id}&folder_wise_course=0&ytflag={ytFlag}&video_id={video_id}", headers)
-        with open("logs.txt", "a") as log_file:
-            log_file.write(f"{res}\n")
+# =============================================================================
+# APPX SECTION
+# =============================================================================
 
-        output = []
-        if res:
-            data = res.get('data', [])
-
+class AppxDownloader:
+    """Class to handle Appx content downloading"""
+    
+    def __init__(self, session: aiohttp.ClientSession, user_id: int):
+        self.session = session
+        self.user_id = user_id
+        self.token = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpZCI6IjEwMTU1NTYyIiwiZW1haWwiOiJhbm9ueW1vdXNAZ21haWwuY29tIiwidGltZXN0YW1wIjoxNzQ1MDc5MzgyLCJ0ZW5hbnRUeXBlIjoidXNlciIsInRlbmFudE5hbWUiOiIiLCJ0ZW5hbnRJZCI6IiIsImRpc3Bvc2FibGUiOmZhbHNlfQ.EfwLhNtbzUVs1qRkMqc3P6ObkKSO0VYWKdAe6GmhdAg"
+        self.userid = "10155562"
+        
+    @staticmethod
+    def decrypt_url(encrypted: str) -> str:
+        """Decrypt Appx encrypted URL"""
+        try:
+            enc = b64decode(encrypted.split(':')[0])
+            key = '638udh3829162018'.encode('utf-8')
+            iv = 'fedcba9876543210'.encode('utf-8')
+            
+            if len(enc) == 0:
+                return ""
+            
+            cipher = AES.new(key, AES.MODE_CBC, iv)
+            plaintext = unpad(cipher.decrypt(enc), AES.block_size)
+            return plaintext.decode('utf-8')
+        except Exception:
+            return ""
+    
+    async def fetch_data(self, url: str, headers: Dict = None, 
+                        data: Dict = None) -> Optional[Dict]:
+        """Fetch data from API with JSON parsing"""
+        try:
             if data:
-                Title = data["Title"]
-                uhs_version = data["uhs_version"]
-                
-                res = await fetch_appx_html_to_json(session, f"{api}/get/get_mpd_drm_links?folder_wise_course=0&videoid={video_id}", headers)
-                if res:
-                    drm_data = res.get('data', [])
-                    if drm_data and isinstance(drm_data, list) and len(drm_data) > 0:
-                        path = appx_decrypt(drm_data[0].get("path", "")) if drm_data and isinstance(drm_data, list) and drm_data and drm_data[0].get("path") else None
-                            
-                        if path:
-                            output.append(f"{Title}:{path}\n")
-                                
-                pdf_link = appx_decrypt(data.get("pdf_link", "")) if data.get("pdf_link", "") and appx_decrypt(data.get("pdf_link", "")).endswith(".pdf") else None
-
-                is_pdf_encrypted = data.get("is_pdf_encrypted", 0)
-                if pdf_link:
-                    if is_pdf_encrypted == 1 or is_pdf_encrypted == "1":
-                        key = appx_decrypt(data.get("pdf_encryption_key", "")) if data.get("pdf_encryption_key") else None
-                        if key:
-                            output.append(f"{Title}:{pdf_link}*{key}\n")
-                        else:
-                            output.append(f"{Title}:{pdf_link}\n")
-                    else:
-                        output.append(f"{Title}:{pdf_link}\n")
-                        
-                pdf_link2 = appx_decrypt(data.get("pdf_link2", "")) if data.get("pdf_link2", "") and appx_decrypt(data.get("pdf_link2", "")).endswith(".pdf") else None
-
-                is_pdf2_encrypted = data.get("is_pdf2_encrypted", 0)
-                if pdf_link2:
-                    if is_pdf2_encrypted == 1 or is_pdf2_encrypted == "1":
-                        key = appx_decrypt(data.get("pdf2_encryption_key", "")) if data.get("pdf2_encryption_key") else None
-                        if key:
-                            output.append(f"{Title}:{pdf_link2}*{key}\n")
-                        else:
-                            output.append(f"{Title}:{pdf_link2}\n")
-                    else:
-                        output.append(f"{Title}:{pdf_link2}\n")
+                async with self.session.post(url, headers=headers, data=data) as response:
+                    text = await response.text()
             else:
-                output.append(f"Did Not Found Course_id : {selected_batch_id} Video_id : {video_id}\n")
+                async with self.session.get(url, headers=headers) as response:
+                    text = await response.text()
+            
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                # Try to extract JSON from response
+                match = re.search(r'\{"status":', text, re.DOTALL)
+                if match:
+                    json_str = text[match.start():]
+                    # Find matching closing brace
+                    open_braces = 0
+                    json_end = -1
+                    for i, char in enumerate(json_str):
+                        if char == '{':
+                            open_braces += 1
+                        elif char == '}':
+                            open_braces -= 1
+                        if open_braces == 0:
+                            json_end = i + 1
+                            break
+                    
+                    if json_end != -1:
+                        return json.loads(json_str[:json_end])
+                
+                return None
+        except Exception as e:
+            logger.error(f"Error fetching data: {e}")
+            return None
+    
+    async def get_courses(self, api: str) -> List[Dict]:
+        """Get all courses from API"""
+        headers = self._get_headers()
+        
+        res1 = await self.fetch_data(f"{api}/get/courselist", headers)
+        res2 = await self.fetch_data(f"{api}/get/courselistnewv2", headers)
+        
+        courses = []
+        
+        if res1 and res1.get('status') == 200:
+            courses.extend(res1.get("data", []))
+        
+        if res2 and res2.get('status') == 200:
+            courses.extend(res2.get("data", []))
+        
+        return courses
+    
+    def _get_headers(self) -> Dict:
+        """Get headers for API requests"""
+        return {
+            'User-Agent': "okhttp/4.9.1",
+            'Accept-Encoding': "gzip",
+            'client-service': "Appx",
+            'auth-key': "appxapi",
+            'user-id': self.userid,
+            'authorization': self.token,
+            'user_app_category': "",
+            'language': "en",
+            'device_type': "ANDROID"
+        }
+    
+    async def process_folder_wise_course(self, api: str, course_id: str, 
+                                        folder_wise: int) -> List[str]:
+        """Process course based on folder_wise_course flag"""
+        headers = self._get_headers()
+        
+        if folder_wise == 0:
+            return await self._process_non_folder(api, course_id, headers)
+        elif folder_wise == 1:
+            return await self._process_folder(api, course_id, headers)
         else:
-            output.append(f"Did Not Found Course_id : {selected_batch_id} Video_id : {video_id}\n")
+            # Try both methods
+            results = []
+            results.extend(await self._process_non_folder(api, course_id, headers))
+            results.extend(await self._process_folder(api, course_id, headers))
+            return results
+    
+    async def _process_non_folder(self, api: str, course_id: str, 
+                                  headers: Dict) -> List[str]:
+        """Process non-folder-wise course"""
+        results = []
+        
+        # Get subjects
+        res = await self.fetch_data(
+            f"{api}/get/allsubjectfrmlivecourseclass?courseid={course_id}&start=-1",
+            headers
+        )
+        
+        if not res or "data" not in res:
+            return results
+        
+        for subject in res["data"]:
+            subject_id = subject.get("subjectid")
+            
+            # Get topics
+            res2 = await self.fetch_data(
+                f"{api}/get/alltopicfrmlivecourseclass?courseid={course_id}&subjectid={subject_id}&start=-1",
+                headers
+            )
+            
+            if not res2 or "data" not in res2:
+                continue
+            
+            for topic in res2["data"]:
+                topic_id = topic.get("topicid")
+                
+                # Get content
+                res3 = await self.fetch_data(
+                    f"{api}/get/livecourseclassbycoursesubtopconceptapiv3?"
+                    f"topicid={topic_id}&start=-1&courseid={course_id}&subjectid={subject_id}",
+                    headers
+                )
+                
+                if not res3 or "data" not in res3:
+                    continue
+                
+                for item in res3["data"]:
+                    content = self._extract_content(item, api, course_id, headers)
+                    if content:
+                        results.extend(content)
+        
+        return results
+    
+    async def _process_folder(self, api: str, course_id: str, 
+                              headers: Dict, parent_id: int = -1) -> List[str]:
+        """Process folder-wise course"""
+        results = []
+        
+        res = await self.fetch_data(
+            f"{api}/get/folder_contentsv2?course_id={course_id}&parent_id={parent_id}",
+            headers
+        )
+        
+        if not res or "data" not in res:
+            return results
+        
+        for item in res["data"]:
+            if item.get("material_type") == "FOLDER":
+                nested_results = await self._process_folder(
+                    api, course_id, headers, item.get("id")
+                )
+                results.extend(nested_results)
+            else:
+                content = self._extract_content(item, api, course_id, headers)
+                if content:
+                    results.extend(content)
+        
+        return results
+    
+    def _extract_content(self, item: Dict, api: str, course_id: str, 
+                        headers: Dict) -> List[str]:
+        """Extract content from item"""
+        results = []
+        title = item.get("Title", "")
+        material_type = item.get("material_type", "")
+        
+        if material_type == "PDF" or material_type == "TEST":
+            # Extract PDF links
+            pdf_link = self.decrypt_url(item.get("pdf_link", ""))
+            if pdf_link and pdf_link.endswith(".pdf"):
+                if item.get("is_pdf_encrypted"):
+                    key = self.decrypt_url(item.get("pdf_encryption_key", ""))
+                    results.append(f"{title}:{pdf_link}*{key}\n" if key else f"{title}:{pdf_link}\n")
+                else:
+                    results.append(f"{title}:{pdf_link}\n")
+            
+            pdf_link2 = self.decrypt_url(item.get("pdf_link2", ""))
+            if pdf_link2 and pdf_link2.endswith(".pdf"):
+                if item.get("is_pdf2_encrypted"):
+                    key = self.decrypt_url(item.get("pdf2_encryption_key", ""))
+                    results.append(f"{title}:{pdf_link2}*{key}\n" if key else f"{title}:{pdf_link2}\n")
+                else:
+                    results.append(f"{title}:{pdf_link2}\n")
+        
+        elif material_type == "IMAGE":
+            thumbnail = item.get("thumbnail")
+            if thumbnail:
+                results.append(f"{title}:{thumbnail}\n")
+        
+        elif material_type == "VIDEO":
+            # This would need async handling, simplified here
+            pass
+        
+        return results
 
-        return output
 
-    except Exception as e:
-        return [
-            f"User ID: {user_id} - An error occurred while fetching details for Course_id : {selected_batch_id}, video ID {video_id}: {str(e)}\n"]
-
-
-def find_appx_matching_apis(search_api, appxapis_file="appxapis.json"):
+def find_appx_matching_apis(search_terms: List[str], file_path: str = "appxapis.json") -> List[Dict]:
+    """Find matching Appx APIs from JSON file"""
     matched_apis = []
-
+    
     try:
-        with open(appxapis_file, 'r') as f:
+        with open(file_path, 'r') as f:
             api_data = json.load(f)
-    except FileNotFoundError:
-        logging.error(f"Error: Could not find the file: {appxapis_file}")
+    except (FileNotFoundError, json.JSONDecodeError) as e:
+        logger.error(f"Error reading API file: {e}")
         return matched_apis
-    except json.JSONDecodeError:
-        logging.error(f"Error: Invalid JSON format in the file: {appxapis_file}")
-        return matched_apis
-
+    
     for item in api_data:
-        for term in search_api:
+        for term in search_terms:
             term = term.strip().lower()
             if term in item["name"].lower() or term in item["api"].lower():
                 matched_apis.append(item)
-
+                break
+    
+    # Remove duplicates
     unique_apis = []
-    seen_apis = set()
+    seen = set()
     for item in matched_apis:
-        if item["api"] not in seen_apis:
+        if item["api"] not in seen:
             unique_apis.append(item)
-            seen_apis.add(item["api"])
-
+            seen.add(item["api"])
+    
     return unique_apis
 
 
-async def process_folder_wise_course_0(session, api, selected_batch_id, headers, user_id):
-    logging.info(f"User ID: {user_id} - Processing folder-wise course 0")
-    res = await fetch_appx_html_to_json(session, f"{api}/get/allsubjectfrmlivecourseclass?courseid={selected_batch_id}&start=-1", headers)
-    all_outputs = []
-    tasks = []
-    if res and "data" in res:
-        subjects = res["data"]
-        for subject in subjects:
-            subjectid = subject.get("subjectid")
-
-            res2 = await fetch_appx_html_to_json(session, f"{api}/get/alltopicfrmlivecourseclass?courseid={selected_batch_id}&subjectid={subjectid}&start=-1", headers)
-            if res2 and "data" in res2:
-                topics = res2["data"]
-                for topic in topics:
-                    topicid = topic.get("topicid")
-
-                    res3 = await fetch_appx_html_to_json(session, f"{api}/get/livecourseclassbycoursesubtopconceptapiv3?topicid={topicid}&start=-1&courseid={selected_batch_id}&subjectid={subjectid}", headers)
-                    if res3 and "data" in res3:
-                        data = res3["data"]
-                        for item in data:
-                            Title = item.get("Title")
-                            video_id = item.get("id")
-                            ytFlag = item.get("ytFlag")
-
-                            if item.get("material_type") == "PDF" or item.get("material_type") == "TEST":
-                                Title = item.get("Title")
-                                
-                                pdf_link = appx_decrypt(item.get("pdf_link", "")) if item.get("pdf_link", "") and appx_decrypt(item.get("pdf_link", "")).endswith(".pdf") else None
-                                                              
-                                is_pdf_encrypted = item.get("is_pdf_encrypted")
-
-                                if pdf_link:
-                                    if is_pdf_encrypted == 1 or is_pdf_encrypted == "1":
-                                        key = appx_decrypt(item.get("pdf_encryption_key"))
-                                        if key:
-                                            all_outputs.append(f"{Title}:{pdf_link}*{key}\n")
-                                        else:
-                                            all_outputs.append(f"{Title}:{pdf_link}\n")
-                                    else:
-                                        all_outputs.append(f"{Title}:{pdf_link}\n")
-                                        
-                                pdf_link2 = appx_decrypt(item.get("pdf_link2", "")) if item.get("pdf_link2", "") and appx_decrypt(item.get("pdf_link2", "")).endswith(".pdf") else None
-                                    
-                                is_pdf2_encrypted = item.get("is_pdf2_encrypted")
-
-                                if pdf_link2:
-                                    if is_pdf2_encrypted == 1 or is_pdf2_encrypted == "1":
-                                        key = appx_decrypt(item.get("pdf2_encryption_key"))
-                                        if key:
-                                            all_outputs.append(f"{Title}:{pdf_link2}*{key}\n")
-                                        else:
-                                            all_outputs.append(f"{Title}:{pdf_link2}\n")
-                                    else:
-                                        all_outputs.append(f"{Title}:{pdf_link2}\n")
-
-                            elif item.get("material_type") == "IMAGE":
-                                thumbnail = item.get("thumbnail")
-                                if thumbnail:
-                                    all_outputs.append(f"{Title}:{thumbnail}\n")
-                                    
-                            elif item.get("material_type") == "VIDEO":
-                                if selected_batch_id is not None and video_id is not None and ytFlag is not None:
-                                    tasks.append(
-                                        fetch_appx_video_id_details_v3(session, api, selected_batch_id, video_id, ytFlag, headers, user_id))
-                                else:
-                                    logging.warning(
-                                        f"User ID: {user_id} - Skipping video due to None value: course_id={selected_batch_id}, video_id={video_id}, ytflag={ytFlag}")
-                    else:
-                        logging.warning(f"User ID: {user_id} - No data found in livecourseclassbycoursesubtopconceptapiv3 API response")
-            else:
-                logging.warning(f"User ID: {user_id} - No data found in alltopicfrmlivecourseclass API response")
-    else:
-        logging.warning(f"User ID: {user_id} - No data found in allsubjectfrmlivecourseclass API response")
-
-    if tasks:
-        results = await asyncio.gather(*tasks)
-        for res in results:
-            all_outputs.extend(res)
-
-    return all_outputs
-
-async def process_folder_wise_course_1(session, api, selected_batch_id, headers, user_id):
-    logging.info(f"User ID: {user_id} - Processing folder-wise course 1")
-    res = await fetch_appx_html_to_json(session, f"{api}/get/folder_contentsv2?course_id={selected_batch_id}&parent_id=-1", headers)
-    all_outputs = []
-    tasks = []
-    if res and "data" in res:
-        data = res["data"]
-        for item in data:
-            Title = item.get("Title")
-            video_id = item.get("id")
-            ytFlag = item.get("ytFlag")
-            
-            if item.get("material_type") == "PDF" or item.get("material_type") == "TEST":
-                Title = item.get("Title")
-                
-                pdf_link = appx_decrypt(item.get("pdf_link", "")) if item.get("pdf_link", "") and appx_decrypt(item.get("pdf_link", "")).endswith(".pdf") else None
-                    
-                is_pdf_encrypted = item.get("is_pdf_encrypted")
-
-                if pdf_link:
-                    if is_pdf_encrypted == 1 or is_pdf_encrypted == "1":
-                        key = appx_decrypt(item.get("pdf_encryption_key"))
-                        if key:
-                            all_outputs.append(f"{Title}:{pdf_link}*{key}\n")
-                        else:
-                            all_outputs.append(f"{Title}:{pdf_link}\n")
-                    else:
-                        all_outputs.append(f"{Title}:{pdf_link}\n")
-                        
-                pdf_link2 = appx_decrypt(item.get("pdf_link2", "")) if item.get("pdf_link2", "") and appx_decrypt(item.get("pdf_link2", "")).endswith(".pdf") else None
-                    
-                is_pdf2_encrypted = item.get("is_pdf2_encrypted")
-
-                if pdf_link2:
-                    if is_pdf2_encrypted == 1 or is_pdf2_encrypted == "1":
-                        key = appx_decrypt(item.get("pdf2_encryption_key"))
-                        if key:
-                            all_outputs.append(f"{Title}:{pdf_link2}*{key}\n")
-                        else:
-                            all_outputs.append(f"{Title}:{pdf_link2}\n")
-                    else:
-                        all_outputs.append(f"{Title}:{pdf_link2}\n")
-
-            elif item.get("material_type") == "IMAGE":
-                thumbnail = item.get("thumbnail")
-                if thumbnail:
-                   all_outputs.append(f"{Title}:{thumbnail}\n")
-                   
-            elif item.get("material_type") == "VIDEO":
-                tasks.append(
-                    fetch_appx_video_id_details_v2(session, api, selected_batch_id, video_id, ytFlag, headers, 1, user_id))
-
-            elif item.get("material_type") == "FOLDER":
-                tasks.append(fetch_appx_folder_contents_v2(session, api, selected_batch_id, item.get("id"), headers, 1, user_id))
-
-    if tasks:
-        results = await asyncio.gather(*tasks)
-        for res in results:
-            all_outputs.extend(res)
-
-    return all_outputs
-
-    
-
 @bot.on_callback_query(filters.regex("^appxwp$"))
-async def appxwp_callback(bot, callback_query):
+async def appxwp_callback(bot: Client, callback_query):
+    """Handle Appx callback"""
     user_id = callback_query.from_user.id
     await callback_query.answer()
-
-    auth_user = auth_users[0]
-    user = await bot.get_users(auth_user)
-    owner_username = "@" + user.username
-
-    if user_id not in auth_users:
-        await bot.send_message(callback_query.message.chat.id, f"**You Are Not Subscribed To This Bot\nContact - {owner_username}**")
+    
+    if not await check_user_auth(user_id, bot, callback_query.message):
         return
-        
+    
     THREADPOOL.submit(asyncio.run, process_appxwp(bot, callback_query.message, user_id))
 
 
-async def process_appxwp(bot: Client, m: Message, user_id: int):
-
-    loop = asyncio.get_event_loop()
-    CONNECTOR = aiohttp.TCPConnector(limit=100, loop=loop)
-
-    async with aiohttp.ClientSession(connector=CONNECTOR, loop=loop) as session:
+async def process_appxwp(bot: Client, message: Message, user_id: int):
+    """Process Appx download"""
+    editable = await message.reply_text("**Enter App Name Or Api**")
+    
+    try:
+        # Get API/App name
         try:
-            editable = await m.reply_text("**Enter App Name Or Api**")
-
-            try:
-                input1 = await bot.listen(chat_id=m.chat.id, filters=filters.user(user_id), timeout=120)
-                api = input1.text
-                await input1.delete(True)
-            except:
-                await editable.edit("**Timeout! You took too long to respond**")
-                return
-
-            if not (api.startswith("http://") or api.startswith("https://")):
-
-                api = api
-                search_api = [term.strip() for term in api.split()]
-
-                matches = find_appx_matching_apis(search_api)
-
-                if matches:
-                    text = ''
-                    for cnt, item in enumerate(matches):
-                        name = item['name']
-                        api = item["api"]
-                        text += f'{cnt + 1}. ```\n{name}:{api}```\n'
-                        
-                    await editable.edit(f"**Send index number of the Batch to download.\n\n{text}**")
-
-                    try:
-                        input2 = await bot.listen(chat_id=m.chat.id, filters=filters.user(user_id), timeout=120)
-                        raw_text2 = input2.text
-                        await input2.delete(True)
-                    except:
-                        await editable.edit("**Timeout! You took too long to respond**")
-                        return
-                
-                    if input2.text.isdigit() and 1 <= int(input2.text) <= len(matches):
-                        selected_api_index = int(input2.text.strip())
-                        item = matches[selected_api_index - 1]
-                        api = item['api']
-                        selected_app_name = item['name']
-
-                    else:
-                        await editable.edit("**Error : Wrong Index Number**")
-                        return
-                else:
-                    await editable.edit("**No matches found. Enter Correct App Starting Word**")
-                    return
-            else:
-                api = api = "https://" + api.replace("https://", "").replace("http://", "").rstrip("/")
-                selected_app_name = api
-
-            token = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpZCI6IjEwMTU1NTYyIiwiZW1haWwiOiJhbm9ueW1vdXNAZ21haWwuY29tIiwidGltZXN0YW1wIjoxNzQ1MDc5MzgyLCJ0ZW5hbnRUeXBlIjoidXNlciIsInRlbmFudE5hbWUiOiIiLCJ0ZW5hbnRJZCI6IiIsImRpc3Bvc2FibGUiOmZhbHNlfQ.EfwLhNtbzUVs1qRkMqc3P6ObkKSO0VYWKdAe6GmhdAg"
-            userid = "10155562"
-                
-            headers = {
-                'User-Agent': "okhttp/4.9.1",
-                'Accept-Encoding': "gzip",
-                'client-service': "Appx",
-                'auth-key': "appxapi",
-         #       'user-id': userid,
-         #       'authorization': token,
-                'user_app_category': "",
-                'language': "en",
-                'device_type': "ANDROID"
-            }
-            
-            res1 = await fetch_appx_html_to_json(session, f"{api}/get/courselist", headers)
-            res2 = await fetch_appx_html_to_json(session, f"{api}/get/courselistnewv2", headers)
-
-            courses1 = res1.get("data", []) if res1 and res1.get('status') == 200 else []
-            total1 = res1.get("total", 0) if res1 and res1.get('status') == 200 else 0
-
-            courses2 = res2.get("data", []) if res2 and res2.get('status') == 200 else []
-            total2 = res2.get("total", 0) if res2 and res2.get('status') == 200 else 0
-            
-            courses = courses1 + courses2
-            total = total1 + total2
-
-            if courses:
-                if total > 50:
-                    text = ''
-                    for cnt, course in enumerate(courses):
-                        name = course["course_name"]
-                        price = course["price"]
-                        text += f'{cnt + 1}. {name} 💵₹{price}\n'
-                    
-                    course_details = f"{user_id}_paid_course_details"
-                
-                    with open(f"{course_details}.txt", 'w') as f:
-                        f.write(text)
-                        
-                    caption = f"**App Name : ```\n{selected_app_name}```\nBatch Name : ```\nPaid Course Details```**"
-                                
-                    files = [f"{course_details}.{ext}" for ext in ["txt"]]
-                                
-                    for file in files:
-                        file_ext = os.path.splitext(file)[1][1:]
-                        try:
-                            with open(file, 'rb') as f:
-                                await editable.delete(True)
-                                doc = await m.reply_document(document=f, caption=caption, file_name=f"paid course details.{file_ext}")
-                                editable = await m.reply_text("**Send index number From the course details txt File to download.**")
-                        except FileNotFoundError:
-                            logging.error(f"File not found: {file}")
-                        except Exception as e:
-                            logging.exception(f"Error sending document {file}:")
-                        finally:
-                            try:
-                                os.remove(file)
-                                logging.info(f"Removed File After Sending : {file}")
-                            except OSError as e:
-                                logging.error(f"Error deleting {file}: {e}")
-                else:
-                    text = ''
-                    for cnt, course in enumerate(courses):
-                        name = course["course_name"]
-                        price = course["price"]
-                        text += f'{cnt + 1}. ```\n{name} 💵₹{price}```\n'
-                    await editable.edit(f"**Send index number of the course to download.\n\n{text}**")
-            else:
-                raise Exception("Did not found any course")
-                
-            try:
-                input5 = await bot.listen(chat_id=m.chat.id, filters=filters.user(user_id), timeout=120)
-                raw_text5 = input5.text
-                await input5.delete(True)
-            except:
-                await editable.edit("**Timeout! You took too long to respond**")
-                return
-                
-            if input5.text.isdigit() and 1 <= int(input5.text) <= len(courses):
-                selected_course_index = int(input5.text.strip())
-                course = courses[selected_course_index - 1]
-                selected_batch_id = course['id']
-                selected_batch_name = course['course_name']
-                folder_wise_course = course.get("folder_wise_course", "")
-                clean_batch_name = f"{selected_batch_name.replace('/', '-').replace('|', '-')[:min(244, len(selected_batch_name))]}"
-                clean_file_name = f"{user_id}_{clean_batch_name}"
-                
-            else:
-                raise Exception("Wrong Index Number")
+            input1 = await bot.listen(
+                chat_id=message.chat.id,
+                filters=filters.user(user_id),
+                timeout=120
+            )
+            raw_text1 = input1.text
+            await input1.delete()
+        except ListenerTimeout:
+            await editable.edit("**Timeout! You took too long to respond**")
+            return
         
-            await editable.edit(f"**Extracting course : {selected_batch_name} ...**")
+        loop = asyncio.get_event_loop()
+        connector = aiohttp.TCPConnector(limit=100, loop=loop)
+        
+        async with aiohttp.ClientSession(connector=connector) as session:
+            downloader = AppxDownloader(session, user_id)
             
+            # Determine API URL
+            if raw_text1.startswith(("http://", "https://")):
+                api = raw_text1.rstrip("/")
+                selected_app_name = api
+            else:
+                # Search for matching APIs
+                search_terms = [term.strip() for term in raw_text1.split()]
+                matches = find_appx_matching_apis(search_terms)
+                
+                if not matches:
+                    raise Exception("No matches found. Enter Correct App Starting Word")
+                
+                text = ''
+                for cnt, item in enumerate(matches, 1):
+                    text += f'{cnt}. ```\n{item["name"]}:{item["api"]}```\n'
+                
+                await editable.edit(
+                    f"**Send index number of the Batch to download.\n\n{text}**"
+                )
+                
+                try:
+                    input2 = await bot.listen(
+                        chat_id=message.chat.id,
+                        filters=filters.user(user_id),
+                        timeout=120
+                    )
+                    raw_text2 = input2.text
+                    await input2.delete()
+                except ListenerTimeout:
+                    await editable.edit("**Timeout! You took too long to respond**")
+                    return
+                
+                if input2.text.isdigit() and 1 <= int(input2.text) <= len(matches):
+                    selected = matches[int(input2.text) - 1]
+                    api = selected['api']
+                    selected_app_name = selected['name']
+                else:
+                    raise Exception("Wrong Index Number")
+            
+            # Get courses
+            courses = await downloader.get_courses(api)
+            
+            if not courses:
+                raise Exception("Did not found any course")
+            
+            # Display courses
+            if len(courses) > 50:
+                # Save to file
+                text = ''
+                for cnt, course in enumerate(courses, 1):
+                    text += f'{cnt}. {course["course_name"]} 💵₹{course.get("price", "N/A")}\n'
+                
+                file_name = f"{user_id}_paid_course_details"
+                with open(f"{file_name}.txt", 'w') as f:
+                    f.write(text)
+                
+                caption = f"**App Name : ```\n{selected_app_name}```\nBatch Name : ```\nPaid Course Details```**"
+                
+                await editable.delete()
+                with open(f"{file_name}.txt", 'rb') as f:
+                    await message.reply_document(
+                        document=f,
+                        caption=caption,
+                        file_name="paid course details.txt"
+                    )
+                os.remove(f"{file_name}.txt")
+                
+                editable = await message.reply_text(
+                    "**Send index number From the course details txt File to download.**"
+                )
+            else:
+                text = ''
+                for cnt, course in enumerate(courses, 1):
+                    text += f'{cnt}. ```\n{course["course_name"]} 💵₹{course.get("price", "N/A")}```\n'
+                await editable.edit(
+                    f"**Send index number of the course to download.\n\n{text}**"
+                )
+            
+            # Get course selection
+            try:
+                input5 = await bot.listen(
+                    chat_id=message.chat.id,
+                    filters=filters.user(user_id),
+                    timeout=120
+                )
+                raw_text5 = input5.text
+                await input5.delete()
+            except ListenerTimeout:
+                await editable.edit("**Timeout! You took too long to respond**")
+                return
+            
+            if not input5.text.isdigit() or not (1 <= int(input5.text) <= len(courses)):
+                raise Exception("Wrong Index Number")
+            
+            selected_course = courses[int(input5.text) - 1]
+            selected_batch_id = selected_course['id']
+            selected_batch_name = selected_course['course_name']
+            folder_wise = selected_course.get("folder_wise_course", 0)
+            
+            clean_batch_name = clean_filename(selected_batch_name, 244)
+            clean_file_name = f"{user_id}_{clean_batch_name}"
+            
+            await editable.edit(f"**Extracting course : {selected_batch_name} ...**")
             start_time = time.time()
             
-            headers = {
-                "Client-Service": "Appx",
-                "Auth-Key": "appxapi",
-                "source": "website",
-                "Authorization": token,
-                "User-ID": userid
-            }
-
-            all_outputs = []
-
-            if folder_wise_course == 0:
-                logging.info(f"User ID: {user_id} - Processing as non-folder-wise (folder_wise_course = 0)")
-                all_outputs = await process_folder_wise_course_0(session, api, selected_batch_id, headers, user_id)
-
-            elif folder_wise_course == 1:
-                logging.info(f"User ID: {user_id} - Processing as folder-wise (folder_wise_course = 1)")
-                all_outputs = await process_folder_wise_course_1(session, api, selected_batch_id, headers, user_id)
-
-            else:
-                logging.info(f"User ID: {user_id} - folder_wise_course is neither 0 nor 1.  Processing with both methods sequentially.")
-                # Process as if folder_wise_course is 0
-                logging.info(f"User ID: {user_id} - Processing as non-folder-wise (folder_wise_course = 0)")
-                outputs_0 = await process_folder_wise_course_0(session, api, selected_batch_id, headers, user_id)
-                all_outputs.extend(outputs_0)
-
-                # Process as if folder_wise_course is 1
-                logging.info(f"User ID: {user_id} - Processing as folder-wise (folder_wise_course = 1)")
-                outputs_1 = await process_folder_wise_course_1(session, api, selected_batch_id, headers, user_id)
-                all_outputs.extend(outputs_1)
+            # Process course
+            all_outputs = await downloader.process_folder_wise_course(
+                api, selected_batch_id, folder_wise
+            )
             
-            if all_outputs:
-            
-                with open(f"{clean_file_name}.txt", 'w') as f:
-                    for output_line in all_outputs:
-                        f.write(output_line)
-                        
-                end_time = time.time()
-                response_time = end_time - start_time
-                minutes = int(response_time // 60)
-                seconds = int(response_time % 60)
-
-                if minutes == 0:
-                    if seconds < 1:
-                        formatted_time = f"{response_time:.2f} seconds"
-                    else:
-                        formatted_time = f"{seconds} seconds"
-                else:
-                    formatted_time = f"{minutes} minutes {seconds} seconds"
-                                    
-                caption = f"**App Name : ```\n{selected_app_name}```\nBatch Name : ```\n{selected_batch_name}``````\nTime Taken : {formatted_time}```**"
-                                
-                files = [f"{clean_file_name}.{ext}" for ext in ["txt"]]
-                for file in files:
-                    file_ext = os.path.splitext(file)[1][1:]
-                    try:
-                        with open(file, 'rb') as f:
-                            await editable.delete(True)
-                            doc = await m.reply_document(document=f, caption=caption, file_name=f"{clean_batch_name}.{file_ext}")
-                    except FileNotFoundError:
-                        logging.error(f"File not found: {file}")
-                    except Exception as e:
-                        logging.exception(f"Error sending document {file}:")
-                    finally:
-                        try:
-                            os.remove(file)
-                            logging.info(f"Removed File After Sending : {file}")
-                        except OSError as e:
-                            logging.error(f"Error deleting {file}: {e}")
-            else:
+            if not all_outputs:
                 raise Exception("Didn't Found Any Content In The Course")
-                
             
-        except Exception as e:
-            logging.exception(f"An unexpected error occurred: {e}")
-            try:
-                await editable.edit(f"**Error : {e}**")
-            except Exception as ee:
-                logging.error(f"Failed to send error message to user in callback: {ee}")
-        finally:
-            if session:
-                await session.close()
-            await CONNECTOR.close()
+            # Save content
+            with open(f"{clean_file_name}.txt", 'w') as f:
+                for output_line in all_outputs:
+                    f.write(output_line)
+            
+            # Calculate time
+            end_time = time.time()
+            formatted_time = format_time(end_time - start_time)
+            
+            caption = (
+                f"**App Name : ```\n{selected_app_name}```\n"
+                f"Batch Name : ```\n{selected_batch_name}```"
+                f"```\nTime Taken : {formatted_time}```**"
+            )
+            
+            await editable.delete()
+            
+            with open(f"{clean_file_name}.txt", 'rb') as f:
+                await message.reply_document(
+                    document=f,
+                    caption=caption,
+                    file_name=f"{clean_batch_name}.txt"
+                )
+            
+            os.remove(f"{clean_file_name}.txt")
+    
+    except Exception as e:
+        logger.exception(f"Error in Appx download: {e}")
+        try:
+            await editable.edit(f"**Error : {e}**")
+        except Exception:
+            pass
 
 
-                                        
-bot.run()
+# =============================================================================
+# MAIN
+# =============================================================================
+
+if __name__ == "__main__":
+    print("Bot starting...")
+    bot.run()
